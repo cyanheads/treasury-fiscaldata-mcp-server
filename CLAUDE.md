@@ -1,7 +1,7 @@
 # Developer Protocol
 
 **Server:** @cyanheads/treasury-fiscaldata-mcp-server
-**Version:** 0.1.0
+**Version:** 0.1.1
 **Framework:** [@cyanheads/mcp-ts-core](https://www.npmjs.com/package/@cyanheads/mcp-ts-core) `^0.9.19`
 **Engines:** Bun ≥1.3.0, Node ≥24.0.0
 **MCP SDK:** `@modelcontextprotocol/sdk` ^1.29.0
@@ -11,35 +11,26 @@
 
 ---
 
-## First Session
+## Server Overview
 
-This project was just scaffolded with `bunx @cyanheads/mcp-ts-core init`. The framework, skills, and example definitions are in place — the domain isn't. The user's first messages will set direction; wait for them before proceeding.
+**Tools (7):**
 
-> **Remove this section** from CLAUDE.md / AGENTS.md after completing these steps. The skills and conventions below remain — this block is one-time onboarding only.
+| Tool | Purpose |
+|:-----|:--------|
+| `treasury_list_datasets` | Browse embedded catalog of 80+ Treasury Fiscal Data endpoints |
+| `treasury_query_dataset` | Query any endpoint by path, fields, filters, sort, page — with optional DataCanvas spill |
+| `treasury_get_debt` | National debt (Debt to the Penny) — latest, specific date, or date-range series |
+| `treasury_get_interest_rates` | Average Treasury interest rates by security type (monthly) |
+| `treasury_get_exchange_rates` | Official statutory exchange rates for ~130 countries (quarterly) |
+| `treasury_dataframe_describe` | List DataCanvas dataframes with schema, row count, and TTL |
+| `treasury_dataframe_query` | Run single-statement SELECT against DataCanvas dataframes via DuckDB |
 
-1. **Get your bearings.** Take stock of the project tree, the skills in `skills/`, and the tools/MCP servers available. Light tool use is fine for context-building — you're mapping the territory, not committing yet.
-2. **Read the framework docs** — `node_modules/@cyanheads/mcp-ts-core/CLAUDE.md` (builders, Context, errors, exports, conventions)
-3. **Run the `setup` skill** — read `skills/setup/SKILL.md` and follow its checklist (project orientation, agent protocol file selection, echo definition cleanup, skill sync)
-4. **Design the server** — read `skills/design-mcp-server/SKILL.md` and work through it with the user to map the domain into tools, resources, and services before scaffolding
+**Services:**
 
----
+- `fiscal-data` — Treasury Fiscal Data API client with embedded endpoint catalog
+- `canvas-bridge` — Adapter over framework DataCanvas: `df_<id>` minting, per-table TTL, system-catalog SQL deny
 
-## What's Next?
-
-When the user asks what's next or needs direction, suggest options based on the current project state. Common next steps:
-
-1. **Re-run the `setup` skill** — ensures CLAUDE.md, skills, structure, and metadata are populated and up to date with the current codebase
-2. **Run the `design-mcp-server` skill** — if the tool/resource surface hasn't been mapped yet, work through domain design
-3. **Add tools/resources/prompts** — scaffold new definitions using the `add-tool`, `add-app-tool`, `add-resource`, `add-prompt` skills
-4. **Add services** — scaffold domain service integrations using the `add-service` skill
-5. **Add tests** — scaffold tests for existing definitions using the `add-test` skill
-6. **Field-test definitions** — exercise tools/resources/prompts with real inputs using the `field-test` skill, get a report of issues and pain points
-7. **Run `devcheck`** — lint, format, typecheck, and security audit
-8. **Run the `security-pass` skill** — audit handlers for MCP-specific security gaps: output injection, scope blast radius, input sinks, tenant isolation
-9. **Run the `polish-docs-meta` skill** — finalize README, CHANGELOG, metadata, and agent protocol for shipping
-10. **Run the `maintenance` skill** — investigate changelogs, adopt upstream changes, and sync skills after `bun update --latest`
-
-Tailor suggestions to what's actually missing or stale — don't recite the full list every time.
+**DataCanvas:** requires `CANVAS_PROVIDER_TYPE=duckdb`. All Treasury columns are VARCHAR — CAST to DECIMAL or DATE for arithmetic.
 
 ---
 
@@ -56,75 +47,38 @@ Tailor suggestions to what's actually missing or stale — don't recite the full
 
 ## Patterns
 
-### Tool
+### Tool (DataCanvas-aware)
 
 ```ts
 import { tool, z } from '@cyanheads/mcp-ts-core';
+import { getCanvasBridge, maybeRegisterDataframe } from '@/services/canvas-bridge/canvas-bridge.js';
+import { getFiscalDataService } from '@/services/fiscal-data/fiscal-data-service.js';
 
-export const searchItems = tool('search_items', {
-  description: 'Search inventory items by query.',
-  annotations: { readOnlyHint: true },
+export const exampleTool = tool('treasury_example', {
+  description: 'Example tool showing DataCanvas spill pattern.',
+  annotations: { readOnlyHint: true, idempotentHint: true },
   input: z.object({
-    query: z.string().describe('Search terms'),
-    limit: z.number().default(10).describe('Max results'),
+    canvas_id: z.string().optional().describe(
+      'DataCanvas table name to register results. Requires CANVAS_PROVIDER_TYPE=duckdb.'
+    ),
   }),
   output: z.object({
-    items: z.array(z.object({
-      id: z.string().describe('Item ID'),
-      name: z.string().describe('Item name'),
-    })).describe('Matching items'),
+    rows: z.array(z.record(z.string(), z.string())).describe('Result rows.'),
+    canvas_id: z.string().optional().describe('Canvas table name when spilled.'),
   }),
-  auth: ['inventory:read'],
-
   async handler(input, ctx) {
-    const items = await findItems(input.query, input.limit);
-    ctx.log.info('Search completed', { query: input.query, count: items.length });
-    return { items };
+    const svc = getFiscalDataService();
+    const envelope = await svc.fetchPage(ctx, '/v2/...', { pageSize: 1000 });
+    const { canvasId } = input.canvas_id
+      ? await maybeRegisterDataframe(ctx, getCanvasBridge(), envelope.data, {
+          rows: envelope.data,
+          sourceTool: 'treasury_example',
+          queryParams: {},
+        })
+      : {};
+    return { rows: envelope.data, ...(canvasId && { canvas_id: canvasId }) };
   },
-
-  // format() populates content[] — the markdown twin of structuredContent.
-  // Different clients read different surfaces (Claude Code → structuredContent,
-  // Claude Desktop → content[]); both must carry the same data.
-  // Enforced at lint time: every field in `output` must appear in the rendered text.
-  format: (result) => [{
-    type: 'text',
-    text: result.items.map(i => `**${i.id}**: ${i.name}`).join('\n'),
-  }],
-});
-```
-
-### Resource
-
-```ts
-import { resource, z } from '@cyanheads/mcp-ts-core';
-import { notFound } from '@cyanheads/mcp-ts-core/errors';
-
-export const itemData = resource('inventory://{itemId}', {
-  description: 'Fetch an inventory item by ID.',
-  params: z.object({ itemId: z.string().describe('Item identifier') }),
-  auth: ['inventory:read'],
-  async handler(params, ctx) {
-    const item = await ctx.state.get(`item:${params.itemId}`);
-    if (!item) throw notFound(`Item ${params.itemId} not found`, { itemId: params.itemId });
-    return item;
-  },
-});
-```
-
-### Prompt
-
-```ts
-import { prompt, z } from '@cyanheads/mcp-ts-core';
-
-export const reviewCode = prompt('review_code', {
-  description: 'Review code for issues and best practices.',
-  args: z.object({
-    code: z.string().describe('Code to review'),
-    language: z.string().optional().describe('Programming language'),
-  }),
-  generate: (args) => [
-    { role: 'user', content: { type: 'text', text: `Review this ${args.language ?? ''} code:\n${args.code}` } },
-  ],
+  format: (result) => [{ type: 'text', text: `${result.rows.length} rows` }],
 });
 ```
 
@@ -223,20 +177,25 @@ See framework CLAUDE.md and the `api-errors` skill for the full auto-classificat
 
 ```text
 src/
-  index.ts                              # createApp() entry point
+  index.ts                                  # createApp() entry point — registers 7 tools, inits services
   config/
-    server-config.ts                    # Server-specific env vars (Zod schema)
+    server-config.ts                        # CANVAS_TTL_MS → datasetTtlSeconds
   services/
-    [domain]/
-      [domain]-service.ts               # Domain service (init/accessor pattern)
-      types.ts                          # Domain types
+    fiscal-data/
+      fiscal-data-service.ts               # Treasury Fiscal Data API client
+      datasets.ts                          # Embedded catalog of 80+ endpoints
+      types.ts                             # FilterCondition, DatasetCategory, etc.
+    canvas-bridge/
+      canvas-bridge.ts                     # DataCanvas adapter — df_<id> minting, TTL, SQL deny
   mcp-server/
     tools/definitions/
-      [tool-name].tool.ts               # Tool definitions
-    resources/definitions/
-      [resource-name].resource.ts       # Resource definitions
-    prompts/definitions/
-      [prompt-name].prompt.ts           # Prompt definitions
+      list-datasets.tool.ts               # treasury_list_datasets
+      query-dataset.tool.ts               # treasury_query_dataset
+      get-debt.tool.ts                    # treasury_get_debt
+      get-interest-rates.tool.ts          # treasury_get_interest_rates
+      get-exchange-rates.tool.ts          # treasury_get_exchange_rates
+      dataframe-describe.tool.ts          # treasury_dataframe_describe
+      dataframe-query.tool.ts             # treasury_dataframe_query
 ```
 
 ---

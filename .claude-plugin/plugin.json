@@ -1,6 +1,6 @@
 {
   "name": "@cyanheads/treasury-fiscaldata-mcp-server",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "MCP server for US Treasury Fiscal Data — national debt, interest rates, exchange rates, and federal revenue/spending.",
   "author": {
     "name": "cyanheads"
@@ -11,9 +11,10 @@
   "mcpServers": {
     "@cyanheads/treasury-fiscaldata-mcp-server": {
       "command": "npx",
-      "args": ["-y", "@cyanheads/treasury-fiscaldata-mcp-server"],
+      "args": ["-y", "@cyanheads/treasury-fiscaldata-mcp-server@latest"],
       "env": {
-        "MCP_TRANSPORT_TYPE": "stdio"
+        "MCP_TRANSPORT_TYPE": "stdio",
+        "CANVAS_PROVIDER_TYPE": "duckdb"
       }
     }
   }
