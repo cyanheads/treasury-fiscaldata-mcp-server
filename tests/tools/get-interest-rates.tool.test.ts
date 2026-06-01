@@ -152,4 +152,83 @@ describe('getInterestRatesTool', () => {
     const text = (blocks[0] as { text: string }).text;
     expect(text).toContain('No records');
   });
+
+  it('total_records in latest mode reflects rows returned, not full API count', async () => {
+    // The API returns total-count=4945 (full dataset) but only 3 rows in this fetch
+    const envelope: FiscalDataEnvelope = {
+      data: SAMPLE_ROWS as Record<string, string>[],
+      meta: {
+        count: 3,
+        labels: {},
+        dataTypes: {},
+        dataFormats: {},
+        'total-count': 4945, // full API dataset count
+        'total-pages': 1,
+      },
+      links: { self: '', first: null, prev: null, next: null, last: null },
+    };
+    vi.mocked(getFiscalDataService).mockReturnValue({
+      fetchPage: vi.fn().mockResolvedValue(envelope),
+    } as unknown as ReturnType<typeof getFiscalDataService>);
+
+    const ctx = createMockContext();
+    const input = getInterestRatesTool.input.parse({ mode: 'latest' });
+    const result = await getInterestRatesTool.handler(input, ctx);
+
+    // Must reflect actual rows returned, not the 4945 API total
+    expect(result.total_records).toBe(SAMPLE_ROWS.length);
+    expect(result.total_records).not.toBe(4945);
+  });
+
+  it('series with canvas returns at most 20 rows inline when canvas is registered', async () => {
+    // Build 25 rows across 2 months — more than the 20-row preview cap
+    const manyRows: RateRow[] = Array.from({ length: 25 }, (_, i) => ({
+      record_date: i < 13 ? '2026-04-30' : '2026-03-31',
+      security_type_desc: 'Marketable',
+      security_desc: 'Treasury Bills',
+      avg_interest_rate_amt: '3.696',
+    }));
+    const bigEnvelope: FiscalDataEnvelope = {
+      data: manyRows as Record<string, string>[],
+      meta: {
+        count: 25,
+        labels: {},
+        dataTypes: {},
+        dataFormats: {},
+        'total-count': 250, // > 200 threshold → triggers canvas spill logic
+        'total-pages': 1,
+      },
+      links: { self: '', first: null, prev: null, next: null, last: null },
+    };
+
+    // Provide a working canvas bridge so canvasId is set after registration
+    const { getCanvasBridge } = await import('@/services/canvas-bridge/canvas-bridge.js');
+    vi.mocked(getCanvasBridge).mockReturnValue({
+      registerDataframe: vi.fn().mockResolvedValue({
+        tableName: 'df_TEST_0001',
+        rowCount: 25,
+        expiresAt: '2026-06-02T00:00:00.000Z',
+        columnSchema: [],
+      }),
+    } as unknown as ReturnType<typeof getCanvasBridge>);
+
+    vi.mocked(getFiscalDataService).mockReturnValue({
+      fetchPage: vi.fn().mockResolvedValue(bigEnvelope),
+    } as unknown as ReturnType<typeof getFiscalDataService>);
+
+    const ctx = createMockContext();
+    const input = getInterestRatesTool.input.parse({
+      mode: 'series',
+      start_date: '2026-03-01',
+      end_date: '2026-04-30',
+      canvas_id: 'df_TEST_0001',
+    });
+    const result = await getInterestRatesTool.handler(input, ctx);
+
+    // When canvas was registered, inline preview must be capped at 20
+    expect(result.canvas_id).toBe('df_TEST_0001');
+    expect(result.rates.length).toBeLessThanOrEqual(20);
+    // total_records reflects the full count from API
+    expect(result.total_records).toBe(250);
+  });
 });

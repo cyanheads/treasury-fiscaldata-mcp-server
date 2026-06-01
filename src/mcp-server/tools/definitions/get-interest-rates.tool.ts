@@ -185,10 +185,12 @@ export const getInterestRatesTool = tool('treasury_get_interest_rates', {
       }
     }
 
+    const preview = canvasId ? mapped.slice(0, 20) : mapped;
+
     return {
       as_of_date: asOfDate,
-      rates: mapped,
-      total_records: totalRecords,
+      rates: preview,
+      total_records: input.mode === 'latest' ? rows.length : totalRecords,
       ...(canvasId !== undefined && { canvas_id: canvasId }),
       ...(canvasExpiresAt !== undefined && { canvas_expires_at: canvasExpiresAt }),
     };
@@ -197,7 +199,11 @@ export const getInterestRatesTool = tool('treasury_get_interest_rates', {
   format: (result) => {
     const lines: string[] = [];
     lines.push(`**As of:** ${result.as_of_date}`);
-    lines.push(`**Records:** ${result.total_records}`);
+    const truncated =
+      result.canvas_id && result.rates.length < result.total_records
+        ? ` (showing ${result.rates.length} of ${result.total_records})`
+        : '';
+    lines.push(`**Records:** ${result.total_records}${truncated}`);
     if (result.canvas_id) {
       lines.push(
         `**Canvas:** \`${result.canvas_id}\` (expires ${result.canvas_expires_at ?? 'unknown'})`,

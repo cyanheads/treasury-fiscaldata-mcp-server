@@ -144,16 +144,6 @@ export const getExchangeRatesTool = tool('treasury_get_exchange_rates', {
 
     const totalCount = envelope.meta['total-count'];
 
-    // For latest mode, scope to the most recent record_date only
-    let rows = envelope.data;
-    let latestDate = rows[0]?.record_date ?? '';
-
-    if (input.mode === 'latest' && latestDate) {
-      rows = rows.filter((r) => r.record_date === latestDate);
-    } else if (rows[0]) {
-      latestDate = rows[0].record_date ?? '';
-    }
-
     // Check for empty results when countries were specified
     if (countries.length > 0 && totalCount === 0) {
       throw ctx.fail(
@@ -163,9 +153,33 @@ export const getExchangeRatesTool = tool('treasury_get_exchange_rates', {
       );
     }
 
-    // Check for partial mismatches (some countries returned, some absent)
-    if (countries.length > 1 && rows.length > 0) {
-      const returnedCountries = new Set(rows.map((r) => r.country));
+    let rows = envelope.data;
+    let latestDate = rows[0]?.record_date ?? '';
+
+    if (input.mode === 'latest') {
+      if (countries.length > 0) {
+        // When filtering by country, each country has its own last-record date — don't collapse
+        // to a single date or countries with stale last-records silently drop out.
+        // Deduplicate to the most-recent record per country instead.
+        const seen = new Set<string>();
+        rows = rows.filter((r) => {
+          const c = r.country ?? '';
+          if (seen.has(c)) return false;
+          seen.add(c);
+          return true;
+        });
+      } else if (latestDate) {
+        // No country filter — all countries share a single latest quarter, safe to date-filter.
+        rows = rows.filter((r) => r.record_date === latestDate);
+      }
+    } else if (rows[0]) {
+      latestDate = rows[0].record_date ?? '';
+    }
+
+    // Check for partial mismatches (some countries returned, some absent) — run on full
+    // envelope.data (pre-date-filter) so countries with older last-records aren't missed.
+    if (countries.length > 1 && envelope.data.length > 0) {
+      const returnedCountries = new Set(envelope.data.map((r) => r.country));
       const missing = countries.filter((c) => !returnedCountries.has(c));
       if (missing.length > 0) {
         ctx.enrich.notice(
@@ -218,11 +232,13 @@ export const getExchangeRatesTool = tool('treasury_get_exchange_rates', {
       }
     }
 
+    const preview = canvasId ? mapped.slice(0, 20) : mapped;
+
     return {
       as_of_date: latestDate,
       effective_date: rows[0]?.effective_date ?? latestDate ?? '',
-      rates: mapped,
-      total_records: rows.length,
+      rates: preview,
+      total_records: input.mode === 'series' ? totalCount : rows.length,
       note: RATE_NOTE,
       ...(canvasId !== undefined && { canvas_id: canvasId }),
       ...(canvasExpiresAt !== undefined && { canvas_expires_at: canvasExpiresAt }),
@@ -232,7 +248,11 @@ export const getExchangeRatesTool = tool('treasury_get_exchange_rates', {
   format: (result) => {
     const lines: string[] = [];
     lines.push(`**As of:** ${result.as_of_date} (effective ${result.effective_date})`);
-    lines.push(`**Records:** ${result.total_records}`);
+    const truncated =
+      result.canvas_id && result.rates.length < result.total_records
+        ? ` (showing ${result.rates.length} of ${result.total_records})`
+        : '';
+    lines.push(`**Records:** ${result.total_records}${truncated}`);
     lines.push(`_${result.note}_`);
     if (result.canvas_id) {
       lines.push(
