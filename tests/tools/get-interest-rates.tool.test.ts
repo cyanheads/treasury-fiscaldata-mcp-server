@@ -11,10 +11,14 @@ vi.mock('@/services/fiscal-data/fiscal-data-service.js', () => ({
   getFiscalDataService: vi.fn(),
   initFiscalDataService: vi.fn(),
 }));
-vi.mock('@/services/canvas-bridge/canvas-bridge.js', () => ({
-  getCanvasBridge: vi.fn().mockReturnValue(undefined),
-  initCanvasBridge: vi.fn(),
-}));
+vi.mock('@/services/canvas-bridge/canvas-bridge.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/services/canvas-bridge/canvas-bridge.js')>();
+  return {
+    ...actual,
+    getCanvasBridge: vi.fn().mockReturnValue(undefined),
+    initCanvasBridge: vi.fn(),
+  };
+});
 
 import { getInterestRatesTool } from '@/mcp-server/tools/definitions/get-interest-rates.tool.js';
 import { getFiscalDataService } from '@/services/fiscal-data/fiscal-data-service.js';

@@ -83,12 +83,9 @@ export const listDatasetsTool = tool('treasury_list_datasets', {
   }),
 
   async handler(input, ctx) {
-    let results = DATASETS.slice();
-
-    if (input.category) {
-      const cat = input.category as DatasetCategory;
-      results = results.filter((d) => d.category === cat);
-    }
+    let results = input.category
+      ? DATASETS.filter((d) => d.category === (input.category as DatasetCategory))
+      : DATASETS;
 
     if (input.search?.trim()) {
       const needle = input.search.trim().toLowerCase();

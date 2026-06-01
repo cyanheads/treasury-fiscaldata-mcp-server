@@ -12,6 +12,11 @@ const FORBIDDEN_CATALOG_PATTERNS: ReadonlyArray<RegExp> = [
   /\bpg_catalog\b/i,
   /\bsqlite_master\b/i,
   /\bduckdb_[a-z_]+\b/i,
+  // DuckDB pragma table-valued functions that expose internal metadata.
+  // These are not in the framework's denied-function list because they lower
+  // into generic plan operators, so we catch them here by name.
+  /\bpragma_database_size\b/i,
+  /\bwhich_secret\b/i,
 ];
 
 function stripStringLiterals(sql: string): string {

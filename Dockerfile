@@ -37,16 +37,18 @@ WORKDIR /usr/src/app
 ENV NODE_ENV=production
 
 # OCI image metadata (https://github.com/opencontainers/image-spec/blob/main/annotations.md)
-LABEL org.opencontainers.image.title="treasury-fiscaldata-mcp-server"
-LABEL org.opencontainers.image.description=""
+LABEL org.opencontainers.image.title="@cyanheads/treasury-fiscaldata-mcp-server"
+LABEL org.opencontainers.image.description="MCP server for US Treasury Fiscal Data — national debt, interest rates, exchange rates, and federal revenue/spending."
+LABEL org.opencontainers.image.source="https://github.com/cyanheads/treasury-fiscaldata-mcp-server"
 LABEL org.opencontainers.image.licenses="Apache-2.0"
 
 # Copy dependency manifests
 COPY package.json bun.lock ./
 
-# Install only production dependencies, ignoring any lifecycle scripts (like 'prepare')
-# that are not needed in the final production image.
-RUN bun install --production --frozen-lockfile --ignore-scripts
+# Copy node_modules from the build stage — avoids reinstalling native modules.
+# @duckdb/node-api contains a pre-compiled native binary; copying the pre-built
+# artifacts from the build stage keeps the production image free of build tools.
+COPY --from=build /usr/src/app/node_modules ./node_modules
 
 # Conditionally install OpenTelemetry optional peer dependencies (Tier 3).
 # These are not bundled by default to keep the base image lean. Enable at build time

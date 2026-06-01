@@ -6,7 +6,7 @@
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
-import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import { getCanvasBridge } from '@/services/canvas-bridge/canvas-bridge.js';
 import { DATASETS } from '@/services/fiscal-data/datasets.js';
 import { getFiscalDataService } from '@/services/fiscal-data/fiscal-data-service.js';
@@ -177,14 +177,17 @@ export const queryDatasetTool = tool('treasury_query_dataset', {
       // Re-route service-layer classification errors through ctx.fail so
       // data.reason is typed against the declared contract and the JSON-RPC
       // error code matches what the contract advertises.
-      const reason = (err as { data?: { reason?: string } }).data?.reason;
+      if (!(err instanceof McpError)) throw err;
+      const reason = err.data?.reason;
       if (
         reason === 'invalid_endpoint' ||
         reason === 'invalid_field' ||
         reason === 'invalid_filter'
       ) {
-        const msg = err instanceof Error ? err.message : String(err);
-        throw ctx.fail(reason as 'invalid_endpoint' | 'invalid_field' | 'invalid_filter', msg);
+        throw ctx.fail(
+          reason as 'invalid_endpoint' | 'invalid_field' | 'invalid_filter',
+          err.message,
+        );
       }
       throw err;
     }

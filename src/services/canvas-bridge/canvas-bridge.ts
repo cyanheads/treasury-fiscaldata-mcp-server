@@ -243,3 +243,20 @@ export function initCanvasBridge(canvas: DataCanvas | undefined): void {
 export function getCanvasBridge(): CanvasBridge | undefined {
   return _bridge;
 }
+
+/**
+ * Register rows on the canvas bridge when conditions are met. Returns
+ * `{ canvasId, canvasExpiresAt }` when registered, or `{}` when skipped
+ * (bridge absent, no rows, or registration fails gracefully).
+ */
+export async function maybeRegisterDataframe(
+  ctx: Context,
+  bridge: CanvasBridge | undefined,
+  rows: Record<string, unknown>[],
+  opts: RegisterDataframeOptions,
+): Promise<{ canvasId?: string; canvasExpiresAt?: string }> {
+  if (!bridge || rows.length === 0) return {};
+  const registered = await bridge.registerDataframe(ctx, opts);
+  if (!registered) return {};
+  return { canvasId: registered.tableName, canvasExpiresAt: registered.expiresAt };
+}

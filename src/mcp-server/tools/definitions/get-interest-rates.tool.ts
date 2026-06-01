@@ -6,7 +6,7 @@
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
-import { getCanvasBridge } from '@/services/canvas-bridge/canvas-bridge.js';
+import { getCanvasBridge, maybeRegisterDataframe } from '@/services/canvas-bridge/canvas-bridge.js';
 import { getFiscalDataService } from '@/services/fiscal-data/fiscal-data-service.js';
 
 const RATES_ENDPOINT = '/v2/accounting/od/avg_interest_rates';
@@ -159,16 +159,12 @@ export const getInterestRatesTool = tool('treasury_get_interest_rates', {
     }));
 
     // Spill to canvas when canvas_id provided or series > 200 rows
-    let canvasId: string | undefined;
-    let canvasExpiresAt: string | undefined;
     const shouldSpill =
       input.mode === 'series' &&
       ((input.canvas_id !== undefined && input.canvas_id !== '') || totalRecords > 200);
 
-    if (shouldSpill) {
-      const bridge = getCanvasBridge();
-      if (bridge && envelope.data.length > 0) {
-        const registered = await bridge.registerDataframe(ctx, {
+    const { canvasId, canvasExpiresAt } = shouldSpill
+      ? await maybeRegisterDataframe(ctx, getCanvasBridge(), envelope.data, {
           rows: envelope.data,
           sourceTool: 'treasury_get_interest_rates',
           queryParams: {
@@ -177,13 +173,8 @@ export const getInterestRatesTool = tool('treasury_get_interest_rates', {
             start_date: input.start_date,
             end_date: input.end_date,
           },
-        });
-        if (registered) {
-          canvasId = registered.tableName;
-          canvasExpiresAt = registered.expiresAt;
-        }
-      }
-    }
+        })
+      : {};
 
     const preview = canvasId ? mapped.slice(0, 20) : mapped;
 

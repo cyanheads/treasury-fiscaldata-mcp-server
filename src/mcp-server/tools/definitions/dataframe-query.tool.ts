@@ -6,7 +6,7 @@
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
-import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import { getCanvasBridge } from '@/services/canvas-bridge/canvas-bridge.js';
 
 export const dataframeQueryTool = tool('treasury_dataframe_query', {
@@ -117,8 +117,9 @@ export const dataframeQueryTool = tool('treasury_dataframe_query', {
         queryParams: { sql: input.sql },
       });
     } catch (err) {
-      const reason = (err as { data?: { reason?: string } }).data?.reason;
-      const msg = err instanceof Error ? err.message : String(err);
+      if (!(err instanceof McpError)) throw err;
+      const reason = err.data?.reason;
+      const msg = err.message;
       if (reason === 'system_catalog_access') {
         throw ctx.fail('system_catalog_access', msg);
       }
@@ -135,7 +136,7 @@ export const dataframeQueryTool = tool('treasury_dataframe_query', {
         'identifier_shape',
         'identifier_reserved',
       ]);
-      if (reason !== undefined && SQL_GATE_REASONS.has(reason)) {
+      if (typeof reason === 'string' && SQL_GATE_REASONS.has(reason)) {
         throw ctx.fail('invalid_sql', msg);
       }
       throw err;

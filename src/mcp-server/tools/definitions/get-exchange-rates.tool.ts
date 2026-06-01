@@ -7,8 +7,9 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
-import { getCanvasBridge } from '@/services/canvas-bridge/canvas-bridge.js';
+import { getCanvasBridge, maybeRegisterDataframe } from '@/services/canvas-bridge/canvas-bridge.js';
 import { getFiscalDataService } from '@/services/fiscal-data/fiscal-data-service.js';
+import type { FilterCondition } from '@/services/fiscal-data/types.js';
 
 const RATES_ENDPOINT = '/v1/accounting/od/rates_of_exchange';
 
@@ -108,30 +109,22 @@ export const getExchangeRatesTool = tool('treasury_get_exchange_rates', {
   async handler(input, ctx) {
     const svc = getFiscalDataService();
 
-    const filters: import('@/services/fiscal-data/types.js').FilterCondition[] = [];
+    const filters: FilterCondition[] = [];
 
     // Country filter using `in` operator for multi-country, `eq` for single
     const countries = (input.countries ?? []).filter(Boolean);
     if (countries.length === 1 && countries[0] !== undefined) {
-      filters.push({ field: 'country', operator: 'eq' as const, value: countries[0] });
+      filters.push({ field: 'country', operator: 'eq', value: countries[0] });
     } else if (countries.length > 1) {
-      filters.push({ field: 'country', operator: 'in' as const, value: countries });
+      filters.push({ field: 'country', operator: 'in', value: countries });
     }
 
     if (input.mode === 'series') {
       if (input.start_date?.trim()) {
-        filters.push({
-          field: 'record_date',
-          operator: 'gte' as const,
-          value: input.start_date,
-        });
+        filters.push({ field: 'record_date', operator: 'gte', value: input.start_date });
       }
       if (input.end_date?.trim()) {
-        filters.push({
-          field: 'record_date',
-          operator: 'lte' as const,
-          value: input.end_date,
-        });
+        filters.push({ field: 'record_date', operator: 'lte', value: input.end_date });
       }
     }
 
@@ -206,16 +199,12 @@ export const getExchangeRatesTool = tool('treasury_get_exchange_rates', {
     }));
 
     // Spill to canvas when canvas_id provided or large series
-    let canvasId: string | undefined;
-    let canvasExpiresAt: string | undefined;
     const shouldSpill =
       input.mode === 'series' &&
       ((input.canvas_id !== undefined && input.canvas_id !== '') || totalCount > 500);
 
-    if (shouldSpill) {
-      const bridge = getCanvasBridge();
-      if (bridge && envelope.data.length > 0) {
-        const registered = await bridge.registerDataframe(ctx, {
+    const { canvasId, canvasExpiresAt } = shouldSpill
+      ? await maybeRegisterDataframe(ctx, getCanvasBridge(), envelope.data, {
           rows: envelope.data,
           sourceTool: 'treasury_get_exchange_rates',
           queryParams: {
@@ -224,13 +213,8 @@ export const getExchangeRatesTool = tool('treasury_get_exchange_rates', {
             start_date: input.start_date,
             end_date: input.end_date,
           },
-        });
-        if (registered) {
-          canvasId = registered.tableName;
-          canvasExpiresAt = registered.expiresAt;
-        }
-      }
-    }
+        })
+      : {};
 
     const preview = canvasId ? mapped.slice(0, 20) : mapped;
 

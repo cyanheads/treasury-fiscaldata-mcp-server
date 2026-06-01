@@ -8,7 +8,7 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
-import { getCanvasBridge } from '@/services/canvas-bridge/canvas-bridge.js';
+import { getCanvasBridge, maybeRegisterDataframe } from '@/services/canvas-bridge/canvas-bridge.js';
 import { getFiscalDataService } from '@/services/fiscal-data/fiscal-data-service.js';
 
 const DEBT_ENDPOINT = '/v2/accounting/od/debt_to_penny';
@@ -185,29 +185,16 @@ export const getDebtTool = tool('treasury_get_debt', {
     }));
 
     // Spill to canvas when canvas_id is provided or series > 500 rows
-    let canvasId: string | undefined;
-    let canvasExpiresAt: string | undefined;
     const shouldSpill =
       (input.canvas_id !== undefined && input.canvas_id !== '') || totalRecords > 500;
 
-    if (shouldSpill) {
-      const bridge = getCanvasBridge();
-      if (bridge && envelope.data.length > 0) {
-        const registered = await bridge.registerDataframe(ctx, {
+    const { canvasId, canvasExpiresAt } = shouldSpill
+      ? await maybeRegisterDataframe(ctx, getCanvasBridge(), envelope.data, {
           rows: envelope.data,
           sourceTool: 'treasury_get_debt',
-          queryParams: {
-            mode: input.mode,
-            start_date: input.start_date,
-            end_date: input.end_date,
-          },
-        });
-        if (registered) {
-          canvasId = registered.tableName;
-          canvasExpiresAt = registered.expiresAt;
-        }
-      }
-    }
+          queryParams: { mode: input.mode, start_date: input.start_date, end_date: input.end_date },
+        })
+      : {};
 
     const preview = mapped.slice(0, 20);
     const latestRow = mapped[0];
