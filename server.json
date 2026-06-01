@@ -1,19 +1,19 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.cyanheads/treasury-fiscaldata-mcp-server",
-  "description": "MCP server for the US Treasury Fiscal Data API — debt, rates, and federal spending.",
+  "description": "MCP server for US Treasury Fiscal Data — debt, interest rates, exchange rates, and spending.",
   "repository": {
     "url": "https://github.com/cyanheads/treasury-fiscaldata-mcp-server",
     "source": "github"
   },
-  "version": "0.1.0",
+  "version": "0.1.1",
   "packages": [
     {
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "@cyanheads/treasury-fiscaldata-mcp-server",
-      "runtimeHint": "node",
-      "version": "0.1.0",
+      "runtimeHint": "bun",
+      "version": "0.1.1",
       "packageArguments": [
         {
           "type": "positional",
@@ -25,6 +25,13 @@
         }
       ],
       "environmentVariables": [
+        {
+          "name": "CANVAS_PROVIDER_TYPE",
+          "description": "Canvas engine for DataCanvas SQL tools. Set to 'duckdb' to enable treasury_dataframe_* tools. Set to 'none' to disable.",
+          "format": "string",
+          "isRequired": false,
+          "default": "duckdb"
+        },
         {
           "name": "MCP_LOG_LEVEL",
           "description": "Sets the minimum log level for output (e.g., 'debug', 'info', 'warn').",
@@ -41,8 +48,8 @@
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "@cyanheads/treasury-fiscaldata-mcp-server",
-      "runtimeHint": "node",
-      "version": "0.1.0",
+      "runtimeHint": "bun",
+      "version": "0.1.1",
       "packageArguments": [
         {
           "type": "positional",
@@ -54,6 +61,13 @@
         }
       ],
       "environmentVariables": [
+        {
+          "name": "CANVAS_PROVIDER_TYPE",
+          "description": "Canvas engine for DataCanvas SQL tools. Set to 'duckdb' to enable treasury_dataframe_* tools. Set to 'none' to disable.",
+          "format": "string",
+          "isRequired": false,
+          "default": "duckdb"
+        },
         {
           "name": "MCP_HTTP_HOST",
           "description": "The hostname for the HTTP server.",

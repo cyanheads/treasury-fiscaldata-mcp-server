@@ -1,7 +1,7 @@
 {
   "manifest_version": "0.3",
   "name": "treasury-fiscaldata-mcp-server",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "MCP server for US Treasury Fiscal Data — national debt, interest rates, exchange rates, and federal revenue/spending.",
   "author": { "name": "cyanheads" },
   "server": {
@@ -13,7 +13,8 @@
       "env": {
         "MCP_TRANSPORT_TYPE": "stdio",
         "MCP_AUTH_MODE": "none",
-        "NODE_ENV": "production"
+        "NODE_ENV": "production",
+        "CANVAS_PROVIDER_TYPE": "${user_config.canvas_provider_type}"
       }
     }
   },
@@ -22,5 +23,12 @@
   },
   "tools_generated": true,
   "prompts_generated": true,
-  "user_config": {}
+  "user_config": {
+    "canvas_provider_type": {
+      "title": "Canvas Provider Type",
+      "type": "string",
+      "default": "duckdb",
+      "description": "Canvas engine for DataCanvas SQL tools. 'duckdb' enables treasury_dataframe_* tools; 'none' disables them."
+    }
+  }
 }
