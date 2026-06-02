@@ -1,6 +1,6 @@
 {
   "name": "@cyanheads/treasury-fiscaldata-mcp-server",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "mcpName": "io.github.cyanheads/treasury-fiscaldata-mcp-server",
   "description": "MCP server for US Treasury Fiscal Data — national debt, interest rates, exchange rates, and federal revenue/spending.",
   "type": "module",
