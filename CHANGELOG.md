@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.1.3](changelog/0.1.x/0.1.3.md) — 2026-06-04
+
+Correct catalog endpoint count — 17 curated endpoints, not 80+
+
 ## [0.1.2](changelog/0.1.x/0.1.2.md) — 2026-06-02
 
 Public hosted endpoint — https://treasury-fiscaldata.caseyjhand.com/mcp
