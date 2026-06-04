@@ -1,13 +1,13 @@
 <div align="center">
   <h1>@cyanheads/treasury-fiscaldata-mcp-server</h1>
-  <p><b>Query US Treasury national debt, interest rates, exchange rates, and 80+ fiscal datasets via MCP. STDIO or Streamable HTTP.</b>
+  <p><b>Query US Treasury national debt, interest rates, exchange rates, and fiscal datasets via MCP. STDIO or Streamable HTTP.</b>
   <div>7 Tools</div>
   </p>
 </div>
 
 <div align="center">
 
-[![Version](https://img.shields.io/badge/Version-0.1.2-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/treasury-fiscaldata-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^1.29.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/treasury-fiscaldata-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/treasury-fiscaldata-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^5.9.3-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.3.11-blueviolet.svg?style=flat-square)](https://bun.sh/)
+[![Version](https://img.shields.io/badge/Version-0.1.3-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/treasury-fiscaldata-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^1.29.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/treasury-fiscaldata-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/treasury-fiscaldata-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^5.9.3-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.3.11-blueviolet.svg?style=flat-square)](https://bun.sh/)
 
 </div>
 
@@ -33,7 +33,7 @@ Five tools for querying the US Treasury Fiscal Data API, plus two for SQL analyt
 
 | Tool | Description |
 |:-----|:------------|
-| `treasury_list_datasets` | Browse the catalog of 80+ Treasury Fiscal Data endpoints with field names, descriptions, and update cadence |
+| `treasury_list_datasets` | Browse the curated catalog of 17 Treasury Fiscal Data endpoints with field names, descriptions, and update cadence |
 | `treasury_query_dataset` | Query any Treasury Fiscal Data endpoint by path, field list, filters, sort, and page — with optional DataCanvas spill |
 | `treasury_get_debt` | Fetch national debt (Debt to the Penny) — latest record, specific date, or date-range series with optional DataCanvas spill |
 | `treasury_get_interest_rates` | Average interest rates Treasury pays on outstanding securities by type (Bills, Notes, Bonds, TIPS, FRN) |
@@ -120,7 +120,7 @@ Built on [`@cyanheads/mcp-ts-core`](https://www.npmjs.com/package/@cyanheads/mcp
 
 Treasury-specific:
 
-- Embedded catalog of 80+ Treasury Fiscal Data endpoints with field metadata — no discovery round-trip required
+- Curated catalog of 17 Treasury Fiscal Data endpoints with field metadata — no discovery round-trip required. Pass any endpoint path directly to `treasury_query_dataset` to access datasets not in the catalog.
 - Convenience tools for the three most-queried datasets (national debt, interest rates, exchange rates)
 - Full generic access to any Fiscal Data endpoint via `treasury_query_dataset`
 - DataCanvas integration: large time-series pulls register as `df_<id>` dataframes queryable via DuckDB SQL

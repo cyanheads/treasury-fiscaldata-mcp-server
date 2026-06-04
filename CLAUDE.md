@@ -1,7 +1,7 @@
 # Developer Protocol
 
 **Server:** @cyanheads/treasury-fiscaldata-mcp-server
-**Version:** 0.1.2
+**Version:** 0.1.3
 **Framework:** [@cyanheads/mcp-ts-core](https://www.npmjs.com/package/@cyanheads/mcp-ts-core) `^0.9.19`
 **Engines:** Bun ≥1.3.0, Node ≥24.0.0
 **MCP SDK:** `@modelcontextprotocol/sdk` ^1.29.0
@@ -17,7 +17,7 @@
 
 | Tool | Purpose |
 |:-----|:--------|
-| `treasury_list_datasets` | Browse embedded catalog of 80+ Treasury Fiscal Data endpoints |
+| `treasury_list_datasets` | Browse curated catalog of 17 Treasury Fiscal Data endpoints |
 | `treasury_query_dataset` | Query any endpoint by path, fields, filters, sort, page — with optional DataCanvas spill |
 | `treasury_get_debt` | National debt (Debt to the Penny) — latest, specific date, or date-range series |
 | `treasury_get_interest_rates` | Average Treasury interest rates by security type (monthly) |
@@ -183,7 +183,7 @@ src/
   services/
     fiscal-data/
       fiscal-data-service.ts               # Treasury Fiscal Data API client
-      datasets.ts                          # Embedded catalog of 80+ endpoints
+      datasets.ts                          # Curated catalog of 17 endpoints
       types.ts                             # FilterCondition, DatasetCategory, etc.
     canvas-bridge/
       canvas-bridge.ts                     # DataCanvas adapter — df_<id> minting, TTL, SQL deny

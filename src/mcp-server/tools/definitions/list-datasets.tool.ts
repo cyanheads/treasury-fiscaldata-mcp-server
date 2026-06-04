@@ -1,7 +1,7 @@
 /**
- * @fileoverview Browse the embedded catalog of available Treasury Fiscal Data
- * endpoints with field names, descriptions, and update cadence. No upstream
- * network calls — serves from a static catalog bundled with the server.
+ * @fileoverview Browse the curated catalog of Treasury Fiscal Data endpoints
+ * with field names, descriptions, and update cadence. No upstream network
+ * calls — serves from a static catalog bundled with the server.
  * @module mcp-server/tools/definitions/list-datasets
  */
 
@@ -12,7 +12,7 @@ import type { DatasetCategory } from '@/services/fiscal-data/types.js';
 export const listDatasetsTool = tool('treasury_list_datasets', {
   title: 'List Treasury Fiscal Data Datasets',
   description:
-    'Browse the catalog of available US Treasury Fiscal Data API endpoints. Returns endpoint paths, field names, descriptions, and update cadence for each dataset. Use this tool before treasury_query_dataset to discover the correct endpoint path and field names — a typo in either causes a 400 error from the API. The catalog covers debt, interest rates, exchange rates, revenue/spending, savings bonds, and securities datasets.',
+    'Browse the curated catalog of US Treasury Fiscal Data API endpoints. Returns endpoint paths, field names, descriptions, and update cadence for each dataset. Use this tool before treasury_query_dataset to discover the correct endpoint path and field names — a typo in either causes a 400 error from the API. The catalog is a curated subset of the full API — pass any endpoint path directly to treasury_query_dataset to query datasets not listed here. The catalog covers debt, interest rates, exchange rates, revenue/spending, savings bonds, and securities datasets.',
   annotations: { readOnlyHint: true, idempotentHint: true },
 
   input: z.object({
@@ -34,7 +34,7 @@ export const listDatasetsTool = tool('treasury_list_datasets', {
       .string()
       .optional()
       .describe(
-        'Keyword filter against dataset name and description (case-insensitive substring match). Useful for narrowing 80+ datasets when the category is uncertain.',
+        'Keyword filter against dataset name and description (case-insensitive substring match). Useful for narrowing results when the category is uncertain.',
       ),
   }),
 

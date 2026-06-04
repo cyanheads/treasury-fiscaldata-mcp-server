@@ -28,8 +28,8 @@ await createApp({
   resources: [],
   prompts: [],
   instructions:
-    'Use the treasury_* tools to query the US Treasury Fiscal Data API — national debt, interest rates, exchange rates, and 80+ other datasets. ' +
-    'Workflow: treasury_list_datasets to discover endpoint paths and field names → treasury_query_dataset for any dataset, or treasury_get_debt / treasury_get_interest_rates / treasury_get_exchange_rates for the headline convenience tools. ' +
+    'Use the treasury_* tools to query the US Treasury Fiscal Data API — national debt, interest rates, exchange rates, and other fiscal datasets. ' +
+    'Workflow: treasury_list_datasets to discover endpoint paths and field names for the curated catalog → treasury_query_dataset for any dataset (including endpoints not in the catalog, if you know the path). Convenience tools: treasury_get_debt / treasury_get_interest_rates / treasury_get_exchange_rates. ' +
     'For large time-series pulls, pass canvas_id to get a df_<id> table you can SQL via treasury_dataframe_query. ' +
     'All API values are strings — including numeric and date fields. Null values appear as the string "null". ' +
     'Exchange rates are official Treasury reporting rates (foreign currency units per 1 USD), not market rates. ' +
