@@ -144,6 +144,7 @@ export class CanvasBridge {
 
     const registerAs = options.registerAs;
     const result = await instance.query(sql, {
+      denySystemCatalogs: true,
       ...(options.preview !== undefined && { preview: options.preview }),
       ...(options.rowLimit !== undefined && { rowLimit: options.rowLimit }),
       ...(registerAs !== undefined && { registerAs }),

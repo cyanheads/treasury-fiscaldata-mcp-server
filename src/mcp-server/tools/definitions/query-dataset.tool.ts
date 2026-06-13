@@ -25,6 +25,12 @@ export const queryDatasetTool = tool('treasury_query_dataset', {
       .describe(
         'Guidance when results are empty, a field typo is suspected, or the endpoint was not found in the catalog.',
       ),
+    totalCount: z
+      .number()
+      .optional()
+      .describe(
+        'Total rows matching the query across all pages — discloses that this page is a subset.',
+      ),
   },
 
   errors: [
@@ -201,6 +207,9 @@ export const queryDatasetTool = tool('treasury_query_dataset', {
       totalCount,
       rows: envelope.data.length,
     });
+
+    // Disclose the full match count so the agent knows this page is a subset.
+    ctx.enrich.total(totalCount);
 
     // Canvas registration when canvas_id is provided
     let canvasId: string | undefined;

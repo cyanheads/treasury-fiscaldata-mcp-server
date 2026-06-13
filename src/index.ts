@@ -16,6 +16,8 @@ import { initCanvasBridge } from './services/canvas-bridge/canvas-bridge.js';
 import { initFiscalDataService } from './services/fiscal-data/fiscal-data-service.js';
 
 await createApp({
+  name: 'treasury-fiscaldata-mcp-server',
+  title: 'treasury-fiscaldata-mcp-server',
   tools: [
     listDatasetsTool,
     queryDatasetTool,
