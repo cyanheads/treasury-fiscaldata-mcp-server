@@ -11,7 +11,7 @@
   "mcpServers": {
     "@cyanheads/treasury-fiscaldata-mcp-server": {
       "command": "npx",
-      "args": ["-y", "@cyanheads/treasury-fiscaldata-mcp-server@latest"],
+      "args": ["-y", "@cyanheads/treasury-fiscaldata-mcp-server"],
       "env": {
         "MCP_TRANSPORT_TYPE": "stdio",
         "CANVAS_PROVIDER_TYPE": "duckdb"
