@@ -1,5 +1,5 @@
 {
-  "name": "@cyanheads/treasury-fiscaldata-mcp-server",
+  "name": "treasury-fiscaldata-mcp-server",
   "version": "0.1.4",
   "description": "MCP server for US Treasury Fiscal Data — national debt, interest rates, exchange rates, and federal revenue/spending.",
   "author": {
@@ -9,7 +9,7 @@
   "repository": "https://github.com/cyanheads/treasury-fiscaldata-mcp-server",
   "license": "Apache-2.0",
   "mcpServers": {
-    "@cyanheads/treasury-fiscaldata-mcp-server": {
+    "treasury-fiscaldata-mcp-server": {
       "command": "npx",
       "args": ["-y", "@cyanheads/treasury-fiscaldata-mcp-server"],
       "env": {
