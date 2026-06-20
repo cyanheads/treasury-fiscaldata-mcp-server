@@ -13,5 +13,8 @@
   },
   "outdated": {
     "allowlist": ["typescript", "vitest", "@cyanheads/mcp-ts-core"]
+  },
+  "packaging": {
+    "pluginManifests": true
   }
 }
