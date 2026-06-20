@@ -1,7 +1,7 @@
 {
   "manifest_version": "0.3",
   "name": "treasury-fiscaldata-mcp-server",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "MCP server for US Treasury Fiscal Data — national debt, interest rates, exchange rates, and federal revenue/spending.",
   "author": { "name": "cyanheads" },
   "server": {

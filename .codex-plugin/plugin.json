@@ -1,6 +1,6 @@
 {
   "name": "treasury-fiscaldata-mcp-server",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "MCP server for US Treasury Fiscal Data — national debt, interest rates, exchange rates, and federal revenue/spending.",
   "author": {
     "name": "cyanheads",
@@ -15,7 +15,7 @@
   "interface": {
     "displayName": "treasury-fiscaldata-mcp-server",
     "shortDescription": "MCP server for US Treasury Fiscal Data — national debt, interest rates, exchange rates, and federal revenue/spending.",
-    "longDescription": "",
+    "longDescription": "Query the US Treasury Fiscal Data API for federal fiscal statistics. Browse a curated catalog of 17 endpoints (treasury_list_datasets) with their paths and field names, then query any endpoint by path, fields, filters, sort, and page (treasury_query_dataset) — including endpoints outside the catalog. Convenience tools cover the national debt (treasury_get_debt), average Treasury interest rates by security type (treasury_get_interest_rates), and official statutory exchange rates (treasury_get_exchange_rates), each supporting latest value, a specific date, or a date-range series. Large time-series pulls spill to a DataCanvas dataframe (set CANVAS_PROVIDER_TYPE=duckdb) you can inspect with treasury_dataframe_describe and query with single-statement SQL via treasury_dataframe_query. All API values are returned as strings — CAST to DECIMAL or DATE for arithmetic.",
     "developerName": "cyanheads",
     "category": "finance",
     "capabilities": ["Read"],

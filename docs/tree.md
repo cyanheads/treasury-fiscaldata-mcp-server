@@ -1,6 +1,6 @@
 # treasury-fiscaldata-mcp-server - Directory Structure
 
-Generated on: 2026-06-13 03:44:30
+Generated on: 2026-06-20 18:20:11
 
 ```text
 treasury-fiscaldata-mcp-server/
@@ -27,6 +27,7 @@ treasury-fiscaldata-mcp-server/
 ├── scripts/
 │   ├── build-changelog.ts
 │   ├── build.ts
+│   ├── check-dependency-specifiers.ts
 │   ├── check-docs-sync.ts
 │   ├── check-framework-antipatterns.ts
 │   ├── check-skill-versions.ts
