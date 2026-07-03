@@ -1,0 +1,18 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: treasury-fiscaldata-mcp-server
+abstract: "MCP server for US Treasury Fiscal Data — national debt, interest rates, exchange rates, and federal revenue/spending."
+type: software
+authors:
+  - family-names: Hand
+    given-names: Casey
+    orcid: "https://orcid.org/0009-0009-3726-568X"
+repository-code: "https://github.com/cyanheads/treasury-fiscaldata-mcp-server"
+license: Apache-2.0
+keywords:
+  - mcp
+  - model-context-protocol
+  - treasury
+  - national-debt
+  - interest-rates
+  - federal-spending
