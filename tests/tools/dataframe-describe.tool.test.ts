@@ -49,7 +49,10 @@ describe('dataframeDescribeTool', () => {
       describe: vi.fn().mockResolvedValue([SAMPLE_META]),
     } as unknown as ReturnType<typeof getCanvasBridge>);
 
-    const ctx = createMockContext({ tenantId: 'test-tenant' });
+    const ctx = createMockContext({
+      tenantId: 'test-tenant',
+      errors: dataframeDescribeTool.errors,
+    });
     const input = dataframeDescribeTool.input.parse({});
     const result = await dataframeDescribeTool.handler(input, ctx);
 
@@ -68,7 +71,10 @@ describe('dataframeDescribeTool', () => {
       describe: vi.fn().mockResolvedValue([]),
     } as unknown as ReturnType<typeof getCanvasBridge>);
 
-    const ctx = createMockContext({ tenantId: 'test-tenant' });
+    const ctx = createMockContext({
+      tenantId: 'test-tenant',
+      errors: dataframeDescribeTool.errors,
+    });
     const input = dataframeDescribeTool.input.parse({});
     const result = await dataframeDescribeTool.handler(input, ctx);
 
@@ -80,7 +86,10 @@ describe('dataframeDescribeTool', () => {
       describe: vi.fn().mockResolvedValue([SAMPLE_META]),
     } as unknown as ReturnType<typeof getCanvasBridge>);
 
-    const ctx = createMockContext({ tenantId: 'test-tenant' });
+    const ctx = createMockContext({
+      tenantId: 'test-tenant',
+      errors: dataframeDescribeTool.errors,
+    });
     const input = dataframeDescribeTool.input.parse({ name: 'df_ABCDE_FGHIJ' });
     const result = await dataframeDescribeTool.handler(input, ctx);
 

@@ -74,7 +74,7 @@ describe('listDatasetsTool', () => {
       ],
     };
     const blocks = listDatasetsTool.format!(result);
-    expect(blocks[0].type).toBe('text');
+    expect(blocks[0]?.type).toBe('text');
     const text = (blocks[0] as { text: string }).text;
     expect(text).toContain('Debt to the Penny');
     expect(text).toContain('/v2/accounting/od/debt_to_penny');

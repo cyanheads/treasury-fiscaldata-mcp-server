@@ -36,7 +36,7 @@ await createApp({
     'All API values are strings — including numeric and date fields. Null values appear as the string "null". ' +
     'Exchange rates are official Treasury reporting rates (foreign currency units per 1 USD), not market rates. ' +
     'Debt records are business-days only since 1993-01-04. Interest rate records are end-of-month.',
-  async setup(core) {
+  setup(core) {
     initFiscalDataService();
     initCanvasBridge(core.canvas);
   },

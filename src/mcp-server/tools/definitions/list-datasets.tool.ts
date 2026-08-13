@@ -82,7 +82,7 @@ export const listDatasetsTool = tool('treasury_list_datasets', {
     total: z.number().describe('Total matching datasets.'),
   }),
 
-  async handler(input, ctx) {
+  handler(input, ctx) {
     let results = input.category
       ? DATASETS.filter((d) => d.category === (input.category as DatasetCategory))
       : DATASETS;

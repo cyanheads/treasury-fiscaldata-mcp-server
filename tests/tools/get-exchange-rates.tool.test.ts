@@ -70,7 +70,7 @@ describe('getExchangeRatesTool', () => {
   });
 
   it('returns latest quarter rates', async () => {
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: getExchangeRatesTool.errors });
     const input = getExchangeRatesTool.input.parse({ mode: 'latest' });
     const result = await getExchangeRatesTool.handler(input, ctx);
 
@@ -91,7 +91,7 @@ describe('getExchangeRatesTool', () => {
       fetchPage: vi.fn().mockResolvedValue(makeRatesEnvelope(japanRow)),
     } as unknown as ReturnType<typeof getFiscalDataService>);
 
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: getExchangeRatesTool.errors });
     const input = getExchangeRatesTool.input.parse({
       mode: 'latest',
       countries: ['Japan'],
@@ -135,7 +135,7 @@ describe('getExchangeRatesTool', () => {
       fetchPage: vi.fn().mockResolvedValue(makeRatesEnvelope(sparseRows as RateRow[])),
     } as unknown as ReturnType<typeof getFiscalDataService>);
 
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: getExchangeRatesTool.errors });
     const input = getExchangeRatesTool.input.parse({ mode: 'latest' });
     const result = await getExchangeRatesTool.handler(input, ctx);
 
