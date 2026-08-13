@@ -41,6 +41,11 @@
  *      is a guaranteed install 404. Gated by `devcheck.config.json`
  *      `packaging.pluginManifests` (default on); each manifest is skipped
  *      cleanly when absent (issue #240).
+ *  11. Description parity: `server.json` `description` must equal
+ *      `package.json` `description`. `server.json` feeds the MCP Registry —
+ *      the one install surface no other manifest covers — and nothing else
+ *      compares the two, so a metadata pass that updates `package.json` can
+ *      leave the registry publishing older text indefinitely.
  *
  * Every check skips cleanly when its input is absent — consumers who deleted
  * `manifest.json` for an HTTP-only deploy, or who haven't built a bundle,
@@ -65,6 +70,7 @@ interface ServerJsonPackage {
 }
 
 interface ServerJson {
+  description?: unknown;
   packages?: ServerJsonPackage[];
 }
 
@@ -520,6 +526,27 @@ export function checkPluginManifests(
   return errors;
 }
 
+/**
+ * Check 11: `server.json` must carry the same `description` as `package.json`,
+ * the source of truth every other packaging surface already derives from.
+ * Skips when either side has nothing to compare — an HTTP-only consumer with no
+ * `server.json`, or a package that has not written a description yet.
+ */
+export function checkDescriptionParity(
+  packageDescription: string | undefined,
+  serverJson: Pick<ServerJson, 'description'> | undefined,
+): string[] {
+  const canonical = packageDescription?.trim();
+  if (!canonical || !serverJson) return [];
+
+  const declared = typeof serverJson.description === 'string' ? serverJson.description.trim() : '';
+  if (declared === canonical) return [];
+
+  return [
+    `server.json "description" is ${declared === '' ? 'missing' : `"${declared}"`} — must equal the package.json description "${canonical}" (server.json feeds the MCP Registry; package.json is the source of truth)`,
+  ];
+}
+
 /** Read `packaging.pluginManifests` from devcheck.config.json; default on. */
 function pluginManifestsEnabled(): boolean {
   const cfg = tryReadJson<{ packaging?: { pluginManifests?: boolean } }>(
@@ -533,8 +560,9 @@ async function main(): Promise<void> {
   const warnings: string[] = [];
   const notes: string[] = [];
 
-  const pkg = tryReadJson<{ name?: string }>(resolve('package.json'));
+  const pkg = tryReadJson<{ description?: string; name?: string }>(resolve('package.json'));
   const unscopedName = pkg?.name?.split('/').pop();
+  const serverJson = tryReadJson<ServerJson>(resolve('server.json'));
 
   // ── Manifest-dependent checks (1–4 + manifest identity) ──
   const manifestPath = resolve('manifest.json');
@@ -565,7 +593,6 @@ async function main(): Promise<void> {
       }
     }
 
-    const serverJson = tryReadJson<ServerJson>(resolve('server.json'));
     if (serverJson) {
       const manifestEnv = manifest.server?.mcp_config?.env ?? {};
       const manifestEnvKeys = new Set(Object.keys(manifestEnv));
@@ -604,6 +631,12 @@ async function main(): Promise<void> {
     }
   } else {
     notes.push('No manifest.json — skipping manifest/server.json alignment checks.');
+  }
+
+  // ── Description parity (check 11) ──
+  errors.push(...checkDescriptionParity(pkg?.description, serverJson));
+  if (!serverJson) {
+    notes.push('No server.json — skipping description parity check.');
   }
 
   // ── Bundle-content guard (checks 5–7) ──
