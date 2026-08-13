@@ -19,11 +19,51 @@ const DEBT_FIELDS = [
   'intragov_hold_amt',
 ];
 
+/**
+ * Rows per series request. This is the API's ceiling, not a preference —
+ * `page[size]` above 10000 is rejected outright ("Expected an integer between 1
+ * and 10000"), not clamped, so a larger matched set has to be walked with
+ * `page[number]`.
+ */
+const SERIES_PAGE_SIZE = 10_000;
+
+/**
+ * Rows the series fetch will walk to across all pages. Debt to the Penny holds
+ * one record per business day — 8,369 today, growing ~250/year — so this is over
+ * a century of headroom on a full-range request while bounding the worst case at
+ * five sequential upstream calls. When a matched set exceeds it, the response
+ * reports what was retrieved rather than the count it did not reach.
+ */
+const SERIES_MAX_ROWS = 50_000;
+
+/**
+ * Series rows returned inline. The cap is unconditional: the full daily range
+ * is 8,369 records today, which renders to ~1.7 MB across `structuredContent`
+ * and `content[]` combined — far past what any caller can read in one response.
+ * Everything above the cap is reachable through the canvas table instead.
+ */
+const SERIES_PREVIEW_LIMIT = 20;
+
 export const getDebtTool = tool('treasury_get_debt', {
   title: 'Get National Debt',
   description:
     'Fetch national debt (Debt to the Penny) — total public debt outstanding broken into publicly-held debt and intragovernmental holdings. Three modes: "latest" returns the most recent business day\'s record; "date" returns the record for a specific date (must be a business day — the API only records debt on days markets are open); "series" returns a date range and optionally spills results to DataCanvas for SQL analysis via treasury_dataframe_query. Records go back to 1993-01-04. As of 2026-05-28 the total debt is approximately $39.18T.',
   annotations: { readOnlyHint: true, idempotentHint: true },
+
+  enrichment: {
+    truncated: z
+      .boolean()
+      .optional()
+      .describe('True when the inline series array holds fewer rows than were retrieved.'),
+    shown: z.number().optional().describe('Series rows returned inline.'),
+    cap: z.number().optional().describe('The preview cap applied to the inline series array.'),
+    notice: z
+      .string()
+      .optional()
+      .describe(
+        'Guidance when the inline series is a preview, or when paging stopped before the full matched set.',
+      ),
+  },
 
   errors: [
     {
@@ -95,8 +135,21 @@ export const getDebtTool = tool('treasury_get_debt', {
           .describe('One daily debt record.'),
       )
       .optional()
-      .describe('All records for mode=series (may be truncated when spilled to canvas).'),
-    total_records: z.number().optional().describe('Total matching records for mode=series.'),
+      .describe(
+        `Inline preview of the mode=series records — at most ${SERIES_PREVIEW_LIMIT} rows, newest first. Compare series.length against retrieved_records to detect the cap; the full retrieved set is reachable through canvas_id when one is returned.`,
+      ),
+    total_records: z
+      .number()
+      .optional()
+      .describe(
+        'Records matching the date range upstream. Exceeds retrieved_records when the match is larger than the series row bound.',
+      ),
+    retrieved_records: z
+      .number()
+      .optional()
+      .describe(
+        'Records actually fetched for mode=series across every page, and the row count of the canvas table when one was registered. Never larger than total_records.',
+      ),
     canvas_id: z
       .string()
       .optional()
@@ -131,8 +184,15 @@ export const getDebtTool = tool('treasury_get_debt', {
 
     if (input.mode === 'date') {
       if (!input.date?.trim()) {
+        /**
+         * Nothing was looked up, so the contract's business-day guidance would
+         * answer a question the caller never asked. Point at the input they
+         * omitted instead.
+         */
         throw ctx.fail('no_data_for_date', 'mode=date requires a date parameter (YYYY-MM-DD).', {
-          ...ctx.recoveryFor('no_data_for_date'),
+          recovery: {
+            hint: 'Supply date as YYYY-MM-DD, or switch to mode=latest for the most recent record.',
+          },
         });
       }
       const envelope = await svc.fetchPage(ctx, DEBT_ENDPOINT, {
@@ -159,7 +219,7 @@ export const getDebtTool = tool('treasury_get_debt', {
     const seriesOpts: Parameters<typeof svc.fetchPage>[2] = {
       fields: DEBT_FIELDS,
       sort: '-record_date',
-      pageSize: 10000,
+      pageSize: SERIES_PAGE_SIZE,
     };
     if (input.start_date?.trim()) {
       seriesOpts.filters = [{ field: 'record_date', operator: 'gte', value: input.start_date }];
@@ -172,32 +232,83 @@ export const getDebtTool = tool('treasury_get_debt', {
       ];
     }
 
-    const envelope = await svc.fetchPage(ctx, DEBT_ENDPOINT, seriesOpts);
+    /**
+     * Walk `page[number]` until the matched set is exhausted or the row bound is
+     * reached. `total-count` is upstream truth about the match, not about what
+     * this loop retrieved — the two are reported separately below so nothing
+     * claims a count it never fetched.
+     */
+    const rows: Record<string, string>[] = [];
+    let totalRecords = 0;
+    for (let pageNumber = 1; rows.length < SERIES_MAX_ROWS; pageNumber++) {
+      const envelope = await svc.fetchPage(ctx, DEBT_ENDPOINT, { ...seriesOpts, pageNumber });
+      totalRecords = envelope.meta['total-count'];
+      rows.push(...envelope.data);
+      if (envelope.data.length < SERIES_PAGE_SIZE || rows.length >= totalRecords) break;
+    }
 
-    const totalRecords = envelope.meta['total-count'];
-    ctx.log.info('Debt series fetched', { totalRecords, rows: envelope.data.length });
-
-    const mapped = envelope.data.map((row) => ({
-      record_date: row['record_date'] ?? '',
-      total_debt: row['tot_pub_debt_out_amt'] ?? '',
-      debt_held_public: row['debt_held_public_amt'] ?? '',
-      intragovernmental_holdings: row['intragov_hold_amt'] ?? '',
-    }));
+    const retrievedRecords = rows.length;
+    const incomplete = retrievedRecords < totalRecords;
+    ctx.log.info('Debt series fetched', { totalRecords, retrievedRecords, incomplete });
 
     // Spill to canvas when canvas_id is provided or series > 500 rows
     const shouldSpill =
       (input.canvas_id !== undefined && input.canvas_id !== '') || totalRecords > 500;
 
     const { canvasId, canvasExpiresAt } = shouldSpill
-      ? await maybeRegisterDataframe(ctx, getCanvasBridge(), envelope.data, {
-          rows: envelope.data,
+      ? await maybeRegisterDataframe(ctx, getCanvasBridge(), rows, {
+          rows,
           sourceTool: 'treasury_get_debt',
           queryParams: { mode: input.mode, start_date: input.start_date, end_date: input.end_date },
+          truncated: incomplete,
+          ...(incomplete && { maxRows: SERIES_MAX_ROWS }),
         })
       : {};
 
-    const preview = mapped.slice(0, 20);
-    const latestRow = mapped[0];
+    const preview = rows.slice(0, SERIES_PREVIEW_LIMIT).map((row) => ({
+      record_date: row['record_date'] ?? '',
+      total_debt: row['tot_pub_debt_out_amt'] ?? '',
+      debt_held_public: row['debt_held_public_amt'] ?? '',
+      intragovernmental_holdings: row['intragov_hold_amt'] ?? '',
+    }));
+    const latestRow = preview[0];
+
+    /**
+     * Disclose on the arithmetic, not on canvas presence: the inline array is
+     * short whenever fewer rows are returned than were retrieved, whether or not
+     * a canvas absorbed the rest. One flush — `ctx.enrich.notice` is last-wins,
+     * so a second call would erase the first.
+     */
+    if (retrievedRecords === 0) {
+      ctx.enrich.notice(
+        'No debt records matched the requested range. Debt to the Penny is recorded on business days only — widen start_date/end_date, or use mode=latest for the most recent record.',
+      );
+    } else if (preview.length < retrievedRecords) {
+      const segments = [`Showing ${preview.length} of ${retrievedRecords} retrieved rows inline.`];
+      /**
+       * Three states, not two: staging can be un-attempted, attempted and
+       * staged, or attempted and unavailable. `shouldSpill` carries what was
+       * asked for, so the last state stops advising a caller to pass the
+       * canvas_id they already passed — or that the row threshold passed for them.
+       */
+      segments.push(
+        canvasId
+          ? `The full retrieved set is registered as ${canvasId} — query it with treasury_dataframe_query.`
+          : shouldSpill
+            ? 'The full retrieved set could not be staged — DataCanvas requires CANVAS_PROVIDER_TYPE=duckdb on the server. Narrow start_date/end_date to bring the range inline.'
+            : 'Pass canvas_id (requires CANVAS_PROVIDER_TYPE=duckdb) to reach the full set with treasury_dataframe_query, or narrow start_date/end_date.',
+      );
+      if (incomplete) {
+        segments.push(
+          `Paging stops at ${SERIES_MAX_ROWS} rows, so ${retrievedRecords} of ${totalRecords} matching records were retrieved — narrow start_date/end_date to reach the remainder.`,
+        );
+      }
+      ctx.enrich.truncated({
+        shown: preview.length,
+        cap: SERIES_PREVIEW_LIMIT,
+        guidance: segments.join(' '),
+      });
+    }
 
     return {
       record_date: latestRow?.record_date ?? '',
@@ -206,6 +317,7 @@ export const getDebtTool = tool('treasury_get_debt', {
       intragovernmental_holdings: latestRow?.intragovernmental_holdings ?? '',
       series: preview,
       total_records: totalRecords,
+      retrieved_records: retrievedRecords,
       ...(canvasId !== undefined && { canvas_id: canvasId }),
       ...(canvasExpiresAt !== undefined && { canvas_expires_at: canvasExpiresAt }),
     };
@@ -213,12 +325,29 @@ export const getDebtTool = tool('treasury_get_debt', {
 
   format: (result) => {
     const lines: string[] = [];
-    lines.push(`**Record Date:** ${result.record_date}`);
-    lines.push(`**Total Debt:** $${result.total_debt}`);
-    lines.push(`**Debt Held by Public:** $${result.debt_held_public}`);
-    lines.push(`**Intragovernmental Holdings:** $${result.intragovernmental_holdings}`);
+    /**
+     * A series can match nothing, in which case every amount is empty. Rendering
+     * them anyway prints `**Total Debt:** $`, which reads as a value rather than
+     * as absence.
+     */
+    if (result.record_date) {
+      lines.push(`**Record Date:** ${result.record_date}`);
+      lines.push(`**Total Debt:** $${result.total_debt}`);
+      lines.push(`**Debt Held by Public:** $${result.debt_held_public}`);
+      lines.push(`**Intragovernmental Holdings:** $${result.intragovernmental_holdings}`);
+    } else {
+      lines.push('_No debt record matched._');
+    }
     if (result.total_records !== undefined) {
       lines.push(`\n**Series:** ${result.total_records} total records`);
+      if (result.retrieved_records !== undefined) {
+        const shown = result.series?.length ?? 0;
+        const previewNote =
+          shown < result.retrieved_records
+            ? ` (showing ${shown} of ${result.retrieved_records})`
+            : '';
+        lines.push(`**Retrieved:** ${result.retrieved_records} rows${previewNote}`);
+      }
       if (result.canvas_id) {
         lines.push(
           `**Canvas:** \`${result.canvas_id}\` (expires ${result.canvas_expires_at ?? 'unknown'})`,
