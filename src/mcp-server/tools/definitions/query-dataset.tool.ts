@@ -15,7 +15,7 @@ import type { FilterCondition } from '@/services/fiscal-data/types.js';
 export const queryDatasetTool = tool('treasury_query_dataset', {
   title: 'Query Treasury Fiscal Data Dataset',
   description:
-    'Query any Treasury Fiscal Data endpoint by path, field list, filters, sort, and page. Call treasury_list_datasets first to get the correct endpoint path and exact field names — a typo in either causes a 400. Filter syntax: each condition is { field, operator, value } where operator is eq/gt/gte/lt/lte/in (e.g., record_date:gte:2024-01-01). Multiple conditions are ANDed together. All response values are strings per the API contract, including numbers and dates; "null" (string) means no value. Supply canvas_id to register the page result into a named DataCanvas dataframe and query it later with treasury_dataframe_query (requires CANVAS_PROVIDER_TYPE=duckdb on the server).',
+    'Query any Treasury Fiscal Data endpoint by path, field list, filters, sort, and page. Call treasury_list_datasets first to get the correct endpoint path and exact field names — a typo in either causes a 400. Filter syntax: each condition is { field, operator, value } where operator is eq/gt/gte/lt/lte/in (e.g., record_date:gte:2024-01-01). Multiple conditions are ANDed together. All response values are strings per the API contract, including numbers and dates; "null" (string) means no value. Supply canvas_id to stage the page result as a DataCanvas table — read its column schema with treasury_dataframe_describe, then run SQL over it with treasury_dataframe_query (requires CANVAS_PROVIDER_TYPE=duckdb on the server).',
   annotations: { readOnlyHint: true, idempotentHint: true },
 
   enrichment: {
@@ -23,7 +23,7 @@ export const queryDatasetTool = tool('treasury_query_dataset', {
       .string()
       .optional()
       .describe(
-        'Guidance when results are empty, a field typo is suspected, or the endpoint was not found in the catalog.',
+        'Guidance when results are empty, a field typo is suspected, the endpoint was not found in the catalog, or staging was requested.',
       ),
     totalCount: z
       .number()
@@ -82,10 +82,31 @@ export const queryDatasetTool = tool('treasury_query_dataset', {
             operator: z
               .enum(['eq', 'gt', 'gte', 'lt', 'lte', 'in'])
               .describe('Comparison operator. "in" matches any value in the provided list.'),
+            /**
+             * Emptiness is caught here rather than upstream. An empty value
+             * serializes to a trailing-colon expression (`record_date:eq:`) the
+             * API rejects as an unsupported *operator*, sending the caller after
+             * a token that was never wrong; an empty list serializes to
+             * `field:in:()` and an empty member to `field:in:(Japan,)`, both of
+             * which the API accepts and then does not apply as written.
+             */
             value: z
               .union([
-                z.string().describe('Single filter value. Dates use YYYY-MM-DD format.'),
-                z.array(z.string()).describe('List of values for "in" operator.'),
+                z
+                  .string()
+                  .min(1, 'Filter value cannot be empty — supply the value to compare against.')
+                  .describe('Single filter value. Dates use YYYY-MM-DD format.'),
+                z
+                  .array(
+                    z
+                      .string()
+                      .min(
+                        1,
+                        'Filter value list cannot contain an empty entry — remove it or supply its value.',
+                      ),
+                  )
+                  .min(1, 'Filter value list cannot be empty — supply at least one value.')
+                  .describe('List of values for "in" operator.'),
               ])
               .describe(
                 'Filter value. For "in", pass an array of strings. Dates use YYYY-MM-DD format.',
@@ -124,7 +145,7 @@ export const queryDatasetTool = tool('treasury_query_dataset', {
       .string()
       .optional()
       .describe(
-        'DataCanvas ID to spill results into for SQL analysis. Omit to receive results inline. Requires CANVAS_PROVIDER_TYPE=duckdb on the server. When provided, the full page result is registered as a dataframe and a canvas_id is returned for use with treasury_dataframe_query.',
+        'Set any non-empty value to stage this page as a DataCanvas table for SQL analysis — the value only requests staging; the server picks the table name. The assigned name (df_XXXXX_XXXXX) comes back in the output canvas_id; pass it to treasury_dataframe_describe, then treasury_dataframe_query. Omit to receive results inline only. Requires CANVAS_PROVIDER_TYPE=duckdb on the server.',
       ),
   }),
 
@@ -150,7 +171,7 @@ export const queryDatasetTool = tool('treasury_query_dataset', {
       .string()
       .optional()
       .describe(
-        'DataCanvas ID where this page is registered. Use with treasury_dataframe_query to run SQL.',
+        'DuckDB table name (df_XXXXX_XXXXX) holding this page. Pass it to treasury_dataframe_describe for the column schema, then use it as the FROM target in treasury_dataframe_query SQL. Absent when nothing was staged.',
       ),
     canvas_expires_at: z.string().optional().describe('ISO 8601 expiry for the canvas dataframe.'),
   }),
@@ -158,12 +179,18 @@ export const queryDatasetTool = tool('treasury_query_dataset', {
   async handler(input, ctx) {
     const svc = getFiscalDataService();
 
+    /**
+     * One flush at the end — `ctx.enrich.notice` is last-wins, so an earlier
+     * call would be erased by a later one. Three sources can fire on the same
+     * request: an off-catalog endpoint, a staged canvas table, and an empty
+     * match.
+     */
+    const noticeSegments: string[] = [];
+
     // Soft catalog check — warn but don't block if endpoint isn't in the catalog
-    const inCatalog = DATASETS.some((d) => d.endpoint === input.endpoint);
-    if (!inCatalog) {
-      ctx.enrich.notice(
-        `Endpoint "${input.endpoint}" was not found in the local catalog. ` +
-          'The request will still be sent to the API, but verify the path via treasury_list_datasets if you get a 404.',
+    if (!DATASETS.some((d) => d.endpoint === input.endpoint)) {
+      noticeSegments.push(
+        `Endpoint "${input.endpoint}" was not found in the local catalog. The request was sent to the API anyway; treasury_list_datasets covers the curated set and will not list this endpoint's field names.`,
       );
     }
 
@@ -232,33 +259,49 @@ export const queryDatasetTool = tool('treasury_query_dataset', {
 
     if (input.canvas_id !== undefined && input.canvas_id !== '') {
       const bridge = getCanvasBridge();
-      if (bridge && envelope.data.length > 0) {
-        const registered = await bridge.registerDataframe(ctx, {
-          rows: envelope.data,
-          sourceTool: 'treasury_query_dataset',
-          queryParams: {
-            endpoint: input.endpoint,
-            fields: input.fields,
-            filters: input.filters,
-            sort: input.sort,
-            page_size: input.page_size,
-            page_number: input.page_number,
-          },
-        });
-        if (registered) {
-          canvasId = registered.tableName;
-          canvasExpiresAt = registered.expiresAt;
-        }
+      const registered =
+        bridge && envelope.data.length > 0
+          ? await bridge.registerDataframe(ctx, {
+              rows: envelope.data,
+              sourceTool: 'treasury_query_dataset',
+              queryParams: {
+                endpoint: input.endpoint,
+                fields: input.fields,
+                filters: input.filters,
+                sort: input.sort,
+                page_size: input.page_size,
+                page_number: input.page_number,
+              },
+            })
+          : undefined;
+      if (registered) {
+        canvasId = registered.tableName;
+        canvasExpiresAt = registered.expiresAt;
+        noticeSegments.push(
+          `Staged this page's ${envelope.data.length} rows as table "${canvasId}". Read its column schema with treasury_dataframe_describe, then query it with treasury_dataframe_query — every column is VARCHAR, so CAST to DECIMAL or DATE for arithmetic.`,
+        );
+      } else if (envelope.data.length > 0) {
+        /**
+         * Staging was asked for and no table came back. Without a word here the
+         * response is a page of rows and an absent `canvas_id`, which reads as
+         * the tool ignoring the parameter. An empty page needs no such line —
+         * the zero-match guidance below already covers it.
+         */
+        noticeSegments.push(
+          'Staging was requested but no table was created — DataCanvas requires CANVAS_PROVIDER_TYPE=duckdb on the server. The rows returned are the whole page.',
+        );
       }
     }
 
     if (totalCount === 0) {
-      ctx.enrich.notice(
+      noticeSegments.push(
         `No rows matched the query on endpoint "${input.endpoint}". ` +
           'If filtering by date, ensure it is a business day in YYYY-MM-DD format. ' +
           'Check field names with treasury_list_datasets.',
       );
     }
+
+    if (noticeSegments.length > 0) ctx.enrich.notice(noticeSegments.join(' '));
 
     return {
       endpoint: input.endpoint,

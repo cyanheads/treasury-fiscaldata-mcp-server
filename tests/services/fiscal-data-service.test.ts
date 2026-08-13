@@ -207,6 +207,32 @@ describe('FiscalDataService.fetchPage — response classification', () => {
     });
   });
 
+  it('classifies a malformed filter expression as invalid_filter', async () => {
+    /**
+     * A filter whose value is missing tokenizes upstream as an operator fault —
+     * the API names the operator even though the expression, not the operator,
+     * is what it rejected.
+     */
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() =>
+        Promise.resolve(
+          errorBody(
+            400,
+            "Invalid query parameter: Operator 'Invalid Filter Format' is not supported. For more information, please see the documentation.",
+          ),
+        ),
+      ),
+    );
+
+    await expect(
+      new FiscalDataService().fetchPage(createMockContext(), ENDPOINT, {}),
+    ).rejects.toMatchObject({
+      code: JsonRpcErrorCode.ValidationError,
+      data: { reason: 'invalid_filter' },
+    });
+  });
+
   it('rejects HTML masquerading as a 200 JSON response without retrying', async () => {
     const fetchMock = vi.fn(() =>
       Promise.resolve(
