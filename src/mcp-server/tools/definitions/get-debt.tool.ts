@@ -47,7 +47,7 @@ const SERIES_PREVIEW_LIMIT = 20;
 export const getDebtTool = tool('treasury_get_debt', {
   title: 'Get National Debt',
   description:
-    'Fetch national debt (Debt to the Penny) — total public debt outstanding broken into publicly-held debt and intragovernmental holdings. Three modes: "latest" returns the most recent business day\'s record; "date" returns the record for a specific date (must be a business day — the API only records debt on days markets are open); "series" returns a date range and optionally spills results to DataCanvas for SQL analysis via treasury_dataframe_query. Records go back to 1993-01-04. As of 2026-05-28 the total debt is approximately $39.18T.',
+    'Fetch national debt (Debt to the Penny) — total public debt outstanding broken into publicly-held debt and intragovernmental holdings. Three modes: "latest" returns the most recent business day\'s record; "date" returns the record for a specific date (must be a business day — the API only records debt on days markets are open); "series" returns a date range, staging the full result as a DataCanvas table when canvas_id is set or the range matches more than 500 rows — read the table\'s column schema with treasury_dataframe_describe, then run SQL over it with treasury_dataframe_query. Records go back to 1993-04-01.',
   annotations: { readOnlyHint: true, idempotentHint: true },
 
   enrichment: {
@@ -61,7 +61,7 @@ export const getDebtTool = tool('treasury_get_debt', {
       .string()
       .optional()
       .describe(
-        'Guidance when the inline series is a preview, or when paging stopped before the full matched set.',
+        'Guidance when the inline series is a preview, when the series was staged as a DataCanvas table, or when paging stopped before the full matched set.',
       ),
   },
 
@@ -71,7 +71,7 @@ export const getDebtTool = tool('treasury_get_debt', {
       code: JsonRpcErrorCode.NotFound,
       when: 'No debt record exists for the requested date (API returns HTTP 200 with empty data[], not 404 — total-count is 0)',
       recovery:
-        'Fiscal Data only records debt on business days from 1993-01-04 onward. Try the nearest business day, or use mode=series with a date range.',
+        'Fiscal Data only records debt on business days from 1993-04-01 onward. Try the nearest business day, or use mode=series with a date range.',
     },
   ],
 
@@ -92,7 +92,7 @@ export const getDebtTool = tool('treasury_get_debt', {
       .string()
       .optional()
       .describe(
-        'ISO 8601 start date for mode=series (inclusive). Fiscal Data has daily debt records back to 1993-01-04.',
+        'ISO 8601 start date for mode=series (inclusive). Fiscal Data has daily debt records back to 1993-04-01.',
       ),
     end_date: z
       .string()
@@ -102,7 +102,7 @@ export const getDebtTool = tool('treasury_get_debt', {
       .string()
       .optional()
       .describe(
-        'DataCanvas table name (df_XXXXX_XXXXX) to register series results into for SQL analysis. When provided, or when the series exceeds 500 rows, the full result is registered and the name is returned in canvas_id. Use treasury_dataframe_query to run SQL against it. Requires CANVAS_PROVIDER_TYPE=duckdb.',
+        'Set any non-empty value to stage mode=series results as a DataCanvas table for SQL analysis — the value only requests staging; the server picks the table name. Staging also happens on its own when the range matches more than 500 rows. The assigned name (df_XXXXX_XXXXX) comes back in the output canvas_id; pass it to treasury_dataframe_describe, then treasury_dataframe_query. Requires CANVAS_PROVIDER_TYPE=duckdb.',
       ),
   }),
 
@@ -113,7 +113,7 @@ export const getDebtTool = tool('treasury_get_debt', {
     total_debt: z
       .string()
       .describe(
-        'Total public debt outstanding in USD (string — convert as needed). Example: "39176301795549.40".',
+        'Total public debt outstanding in USD, as a plain decimal string — no separators, no currency symbol, two decimal places. Convert as needed.',
       ),
     debt_held_public: z
       .string()
@@ -154,7 +154,7 @@ export const getDebtTool = tool('treasury_get_debt', {
       .string()
       .optional()
       .describe(
-        'DataCanvas table name when series was spilled. Use treasury_dataframe_query to run SQL.',
+        'DuckDB table name (df_XXXXX_XXXXX) holding the full retrieved series. Pass it to treasury_dataframe_describe for the column schema, then use it as the FROM target in treasury_dataframe_query SQL. Absent when nothing was staged.',
       ),
     canvas_expires_at: z.string().optional().describe('ISO 8601 expiry for the canvas dataframe.'),
   }),
@@ -274,40 +274,65 @@ export const getDebtTool = tool('treasury_get_debt', {
     const latestRow = preview[0];
 
     /**
-     * Disclose on the arithmetic, not on canvas presence: the inline array is
-     * short whenever fewer rows are returned than were retrieved, whether or not
-     * a canvas absorbed the rest. One flush — `ctx.enrich.notice` is last-wins,
-     * so a second call would erase the first.
+     * Two independent disclosures share one `notice` key, so both are composed
+     * into a single string — `ctx.enrich.notice` (and the `notice` that
+     * `ctx.enrich.truncated` writes) is last-wins, so a second call would erase
+     * the first.
+     *
+     * The preview disclosure keys on the arithmetic, not on canvas presence:
+     * the inline array is short whenever fewer rows are returned than were
+     * retrieved, whether or not a canvas absorbed the rest. The staging
+     * disclosure keys on registration alone — a series short enough to return
+     * inline in full still went somewhere the caller can SQL, and saying so is
+     * the only way the handle in `canvas_id` arrives with its destination
+     * tools attached.
      */
+    const previewIsShort = preview.length < retrievedRecords;
+    const segments: string[] = [];
+
     if (retrievedRecords === 0) {
-      ctx.enrich.notice(
+      segments.push(
         'No debt records matched the requested range. Debt to the Penny is recorded on business days only — widen start_date/end_date, or use mode=latest for the most recent record.',
       );
-    } else if (preview.length < retrievedRecords) {
-      const segments = [`Showing ${preview.length} of ${retrievedRecords} retrieved rows inline.`];
+    } else {
+      if (previewIsShort) {
+        segments.push(`Showing ${preview.length} of ${retrievedRecords} retrieved rows inline.`);
+      }
       /**
        * Three states, not two: staging can be un-attempted, attempted and
        * staged, or attempted and unavailable. `shouldSpill` carries what was
        * asked for, so the last state stops advising a caller to pass the
-       * canvas_id they already passed — or that the row threshold passed for them.
+       * canvas_id they already passed — or that the row threshold passed for
+       * them. The un-attempted state has nothing to say unless the caller is
+       * missing rows.
        */
-      segments.push(
-        canvasId
-          ? `The full retrieved set is registered as ${canvasId} — query it with treasury_dataframe_query.`
-          : shouldSpill
-            ? 'The full retrieved set could not be staged — DataCanvas requires CANVAS_PROVIDER_TYPE=duckdb on the server. Narrow start_date/end_date to bring the range inline.'
-            : 'Pass canvas_id (requires CANVAS_PROVIDER_TYPE=duckdb) to reach the full set with treasury_dataframe_query, or narrow start_date/end_date.',
-      );
+      if (canvasId) {
+        segments.push(
+          `The full retrieved set (${retrievedRecords} rows) is staged as table "${canvasId}". Read its column schema with treasury_dataframe_describe, then query it with treasury_dataframe_query — every column is VARCHAR, so CAST to DECIMAL or DATE for arithmetic.`,
+        );
+      } else if (shouldSpill) {
+        segments.push(
+          'The retrieved set could not be staged — DataCanvas requires CANVAS_PROVIDER_TYPE=duckdb on the server. Narrow start_date/end_date to bring the range inline.',
+        );
+      } else if (previewIsShort) {
+        segments.push(
+          'Pass canvas_id (requires CANVAS_PROVIDER_TYPE=duckdb) to reach the full set with treasury_dataframe_query, or narrow start_date/end_date.',
+        );
+      }
       if (incomplete) {
         segments.push(
           `Paging stops at ${SERIES_MAX_ROWS} rows, so ${retrievedRecords} of ${totalRecords} matching records were retrieved — narrow start_date/end_date to reach the remainder.`,
         );
       }
-      ctx.enrich.truncated({
-        shown: preview.length,
-        cap: SERIES_PREVIEW_LIMIT,
-        guidance: segments.join(' '),
-      });
+    }
+
+    if (segments.length > 0) {
+      const guidance = segments.join(' ');
+      if (previewIsShort) {
+        ctx.enrich.truncated({ shown: preview.length, cap: SERIES_PREVIEW_LIMIT, guidance });
+      } else {
+        ctx.enrich.notice(guidance);
+      }
     }
 
     return {

@@ -358,6 +358,68 @@ describe('getDebtTool', () => {
       expect(String(getEnrichment(ctx).notice)).toContain('df_ABCDE_FGHIJ');
     });
 
+    it('names both dataframe tools alongside the staged table', async () => {
+      useSeries(5000);
+      vi.mocked(maybeRegisterDataframe).mockResolvedValue({
+        canvasId: 'df_ABCDE_FGHIJ',
+        canvasExpiresAt: '2026-08-12T00:00:00.000Z',
+      });
+      const ctx = createMockContext({ errors: getDebtTool.errors });
+
+      await getDebtTool.handler(seriesInput(), ctx);
+
+      const notice = String(getEnrichment(ctx).notice);
+      expect(notice).toContain('treasury_dataframe_describe');
+      expect(notice).toContain('treasury_dataframe_query');
+      expect(notice.indexOf('treasury_dataframe_describe')).toBeLessThan(
+        notice.indexOf('treasury_dataframe_query'),
+      );
+    });
+
+    it('discloses staging even when the whole series fit inline', async () => {
+      useSeries(5);
+      vi.mocked(maybeRegisterDataframe).mockResolvedValue({
+        canvasId: 'df_SHORT_SERIE',
+        canvasExpiresAt: '2026-08-12T00:00:00.000Z',
+      });
+      const ctx = createMockContext({ errors: getDebtTool.errors });
+
+      const result = await getDebtTool.handler(seriesInput({ canvas_id: 'stage-it' }), ctx);
+
+      expect(result.series).toHaveLength(5);
+      expect(result.canvas_id).toBe('df_SHORT_SERIE');
+      expect(String(getEnrichment(ctx).notice)).toContain('df_SHORT_SERIE');
+    });
+
+    it('says the canvas is unavailable when a short series was asked to stage', async () => {
+      useSeries(5);
+      const ctx = createMockContext({ errors: getDebtTool.errors });
+
+      const result = await getDebtTool.handler(seriesInput({ canvas_id: 'stage-it' }), ctx);
+
+      expect(result.canvas_id).toBeUndefined();
+      const notice = String(getEnrichment(ctx).notice);
+      expect(notice).toContain('CANVAS_PROVIDER_TYPE=duckdb');
+      expect(notice).not.toContain('Pass canvas_id');
+      expect(getEnrichment(ctx)).not.toHaveProperty('truncated');
+    });
+
+    it('does not claim truncation when the staged series was returned in full', async () => {
+      useSeries(5);
+      vi.mocked(maybeRegisterDataframe).mockResolvedValue({
+        canvasId: 'df_SHORT_SERIE',
+        canvasExpiresAt: '2026-08-12T00:00:00.000Z',
+      });
+      const ctx = createMockContext({ errors: getDebtTool.errors });
+
+      await getDebtTool.handler(seriesInput({ canvas_id: 'stage-it' }), ctx);
+
+      const enrichment = getEnrichment(ctx);
+      expect(enrichment).not.toHaveProperty('truncated');
+      expect(enrichment).not.toHaveProperty('shown');
+      expect(enrichment).not.toHaveProperty('cap');
+    });
+
     it('stays silent when the whole series fits inline', async () => {
       useSeries(5);
       const ctx = createMockContext({ errors: getDebtTool.errors });
