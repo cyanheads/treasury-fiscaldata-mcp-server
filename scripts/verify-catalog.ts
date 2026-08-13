@@ -26,9 +26,8 @@
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DATASETS } from '../src/services/fiscal-data/datasets.js';
+import { BASE_URL } from '../src/services/fiscal-data/fiscal-data-service.js';
 import type { DatasetEntry } from '../src/services/fiscal-data/types.js';
-
-const BASE_URL = 'https://api.fiscaldata.treasury.gov/services/api/fiscal_service';
 
 /** How many endpoints to probe at once — enough to be quick, gentle upstream. */
 const CONCURRENCY = 4;
@@ -54,10 +53,11 @@ export function auditEntry(entry: DatasetEntry, probe: ProbeResult): CatalogFind
   if (!probe.ok) return { ...identity, unreachable: probe.error, absent: [], unlisted: [] };
 
   const live = new Set(probe.fields);
-  const listed = new Set(entry.fields.map((f) => f.name));
+  const listedNames = entry.fields.map((f) => f.name);
+  const listed = new Set(listedNames);
   return {
     ...identity,
-    absent: entry.fields.map((f) => f.name).filter((name) => !live.has(name)),
+    absent: listedNames.filter((name) => !live.has(name)),
     unlisted: probe.fields.filter((name) => !listed.has(name)),
   };
 }
@@ -121,10 +121,11 @@ async function main(): Promise<void> {
 
   for (let i = 0; i < DATASETS.length; i += CONCURRENCY) {
     const batch = DATASETS.slice(i, i + CONCURRENCY);
-    const probes = await Promise.all(batch.map((entry) => probeEndpoint(entry.endpoint)));
-    for (const [n, entry] of batch.entries()) {
-      findings.push(auditEntry(entry, probes[n] as ProbeResult));
-    }
+    findings.push(
+      ...(await Promise.all(
+        batch.map(async (entry) => auditEntry(entry, await probeEndpoint(entry.endpoint))),
+      )),
+    );
   }
 
   console.log(renderReport(findings));

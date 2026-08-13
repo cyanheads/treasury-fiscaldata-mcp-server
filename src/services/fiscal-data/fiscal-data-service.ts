@@ -16,7 +16,8 @@ import {
 import { httpStatusToErrorCode, withRetry } from '@cyanheads/mcp-ts-core/utils';
 import type { FilterCondition, FiscalDataEnvelope } from './types.js';
 
-const BASE_URL = 'https://api.fiscaldata.treasury.gov/services/api/fiscal_service';
+/** Root of every Fiscal Data endpoint path. Exported so the catalog verifier probes the same host. */
+export const BASE_URL = 'https://api.fiscaldata.treasury.gov/services/api/fiscal_service';
 const DEFAULT_TIMEOUT_MS = 30_000;
 
 export class FiscalDataService {
