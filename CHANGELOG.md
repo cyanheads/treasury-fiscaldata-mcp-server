@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.1.9](changelog/0.1.x/0.1.9.md) — 2026-08-13
+
+treasury_get_interest_rates skips its empty-result span probes when a series carries no date range, since the main fetch already ran that exact query; scripts/verify-catalog.ts imports BASE_URL from fiscal-data-service.ts instead of duplicating it
+
 ## [0.1.8](changelog/0.1.x/0.1.8.md) — 2026-08-13
 
 treasury_get_interest_rates' security_type accepts any live security_desc rather than a closed enum of 8; all 17 treasury_list_datasets endpoints and their field lists resolve against the live API, checked by a new verify:catalog gate

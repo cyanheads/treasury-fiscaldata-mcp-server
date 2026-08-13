@@ -1,6 +1,6 @@
 {
   "name": "treasury-fiscaldata-mcp-server",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "description": "Query US Treasury national debt, interest rates, exchange rates, and fiscal datasets via MCP.",
   "author": {
     "name": "cyanheads"
