@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.1.8](changelog/0.1.x/0.1.8.md) — 2026-08-13
+
+treasury_get_interest_rates' security_type accepts any live security_desc rather than a closed enum of 8; all 17 treasury_list_datasets endpoints and their field lists resolve against the live API, checked by a new verify:catalog gate
+
 ## [0.1.7](changelog/0.1.x/0.1.7.md) — 2026-08-13
 
 treasury_get_exchange_rates collapses mode=latest on the currency and pages its full series; inline series arrays, row_limit-capped queries, and unavailable staging now disclose themselves; empty filter values are rejected at the schema

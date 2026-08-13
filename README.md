@@ -7,7 +7,7 @@
 
 <div align="center">
 
-[![Version](https://img.shields.io/badge/Version-0.1.7-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/treasury-fiscaldata-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^1.30.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/treasury-fiscaldata-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/treasury-fiscaldata-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.3.14-blueviolet.svg?style=flat-square)](https://bun.sh/)
+[![Version](https://img.shields.io/badge/Version-0.1.8-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/treasury-fiscaldata-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^1.30.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/treasury-fiscaldata-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/treasury-fiscaldata-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.3.14-blueviolet.svg?style=flat-square)](https://bun.sh/)
 
 </div>
 
@@ -36,7 +36,7 @@ Five tools for querying the US Treasury Fiscal Data API, plus two for SQL analyt
 | `treasury_list_datasets` | Browse the curated catalog of 17 Treasury Fiscal Data endpoints with field names, descriptions, and update cadence |
 | `treasury_query_dataset` | Query any Treasury Fiscal Data endpoint by path, field list, filters, sort, and page — with optional DataCanvas spill |
 | `treasury_get_debt` | Fetch national debt (Debt to the Penny) — latest record, specific date, or date-range series with optional DataCanvas spill |
-| `treasury_get_interest_rates` | Average interest rates Treasury pays on outstanding securities by type (Bills, Notes, Bonds, TIPS, FRN) |
+| `treasury_get_interest_rates` | Average interest rates Treasury pays on outstanding securities by type — marketable issues, non-marketable series, and aggregate totals |
 | `treasury_get_exchange_rates` | Official Treasury statutory exchange rates for ~165 countries, published quarterly |
 | `treasury_dataframe_describe` | List DataCanvas dataframes materialized by the treasury_* tools with schema, row count, and TTL |
 | `treasury_dataframe_query` | Run a single-statement SELECT against DataCanvas dataframes using standard DuckDB SQL |
@@ -49,6 +49,7 @@ Browse the embedded catalog of available Treasury Fiscal Data endpoints. No netw
 - Keyword search against dataset name and description (case-insensitive substring)
 - Returns endpoint paths, field names, types, and update cadence
 - Use this first to get the exact endpoint path and field names before calling `treasury_query_dataset`
+- Every path and field name is checked against the live API by `bun run verify:catalog`, so a dataset Treasury moves or renames fails a gate rather than reaching a caller
 
 ---
 
@@ -80,7 +81,8 @@ Convenience tool for national debt (Debt to the Penny) — total public debt out
 
 Average interest rates the Treasury pays on outstanding securities. Updated monthly (end-of-month records).
 
-- Covers Bills, Notes, Bonds, TIPS, Floating Rate Notes (FRN), and aggregate marketable/non-marketable totals
+- Covers every security type Treasury reports — marketable issues, non-marketable series, and aggregate totals
+- `security_type` takes any `security_desc` value the data carries, matched exactly; which types Treasury publishes changes over the years, so when a filter matches nothing the response names the types the data does hold
 - `mode=latest` — most recent month's rates for all or one security type
 - `mode=series` — time-range history; auto-spills to DataCanvas when results exceed 200 rows
 
@@ -299,10 +301,13 @@ See [`.env.example`](./.env.example) for the full list of optional overrides.
 - **Run checks and tests:**
 
   ```sh
-  bun run devcheck   # Lint, format, typecheck, security
-  bun run test       # Vitest test suite
-  bun run lint:mcp   # Validate MCP definitions against spec
+  bun run devcheck         # Lint, format, typecheck, security
+  bun run test             # Vitest test suite
+  bun run lint:mcp         # Validate MCP definitions against spec
+  bun run verify:catalog   # Probe every catalog endpoint and field against the live API
   ```
+
+  `verify:catalog` is the one check that needs the network, which is why it is separate from `devcheck` and the test suite. Run it after editing `src/services/fiscal-data/datasets.ts` and before a release.
 
 ### Docker
 

@@ -1,6 +1,6 @@
 {
   "name": "@cyanheads/treasury-fiscaldata-mcp-server",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "mcpName": "io.github.cyanheads/treasury-fiscaldata-mcp-server",
   "description": "Query US Treasury national debt, interest rates, exchange rates, and fiscal datasets via MCP.",
   "type": "module",
@@ -31,6 +31,7 @@
     "format:unsafe": "biome check --write --unsafe .",
     "lint:mcp": "bun run scripts/lint-mcp.ts",
     "lint:packaging": "bun run scripts/lint-packaging.ts",
+    "verify:catalog": "bun run scripts/verify-catalog.ts",
     "bundle": "bun run build && npx -y @anthropic-ai/mcpb pack . dist/treasury-fiscaldata-mcp-server.mcpb && bun run scripts/clean-mcpb.ts dist/treasury-fiscaldata-mcp-server.mcpb",
     "changelog:build": "bun run scripts/build-changelog.ts",
     "changelog:check": "bun run scripts/build-changelog.ts --check",

@@ -1,6 +1,6 @@
 # treasury-fiscaldata-mcp-server - Directory Structure
 
-Generated on: 2026-08-13 05:57:23
+Generated on: 2026-08-13 07:47:12
 
 ```text
 treasury-fiscaldata-mcp-server/
@@ -42,7 +42,8 @@ treasury-fiscaldata-mcp-server/
 │   ├── lint-packaging.ts
 │   ├── list-skills.ts
 │   ├── release-github.ts
-│   └── tree.ts
+│   ├── tree.ts
+│   └── verify-catalog.ts
 ├── skills/
 │   ├── add-app-tool/
 │   │   └── SKILL.md
@@ -159,7 +160,8 @@ treasury-fiscaldata-mcp-server/
 │   ├── prompts/
 │   ├── resources/
 │   ├── scripts/
-│   │   └── lint-packaging.test.ts
+│   │   ├── lint-packaging.test.ts
+│   │   └── verify-catalog.test.ts
 │   ├── services/
 │   │   └── fiscal-data-service.test.ts
 │   └── tools/
