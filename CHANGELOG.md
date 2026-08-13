@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.1.7](changelog/0.1.x/0.1.7.md) — 2026-08-13
+
+treasury_get_exchange_rates collapses mode=latest on the currency and pages its full series; inline series arrays, row_limit-capped queries, and unavailable staging now disclose themselves; empty filter values are rejected at the schema
+
 ## [0.1.6](changelog/0.1.x/0.1.6.md) — 2026-08-12
 
 treasury_get_debt pages the full debt series and discloses its inline preview, rerouted errors carry their declared recovery hints, and 4xx responses stop burning the retry budget — on mcp-ts-core ^0.11.5 and TypeScript 7

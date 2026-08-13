@@ -1,13 +1,13 @@
 <div align="center">
   <h1>@cyanheads/treasury-fiscaldata-mcp-server</h1>
-  <p><b>Query US Treasury national debt, interest rates, exchange rates, and fiscal datasets via MCP. STDIO or Streamable HTTP.</b>
+  <p><b>Query US Treasury national debt, interest rates, exchange rates, and fiscal datasets via MCP.</b>
   <div>7 Tools</div>
   </p>
 </div>
 
 <div align="center">
 
-[![Version](https://img.shields.io/badge/Version-0.1.6-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/treasury-fiscaldata-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^1.30.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/treasury-fiscaldata-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/treasury-fiscaldata-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.3.14-blueviolet.svg?style=flat-square)](https://bun.sh/)
+[![Version](https://img.shields.io/badge/Version-0.1.7-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/treasury-fiscaldata-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^1.30.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/treasury-fiscaldata-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/treasury-fiscaldata-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.3.14-blueviolet.svg?style=flat-square)](https://bun.sh/)
 
 </div>
 
@@ -37,7 +37,7 @@ Five tools for querying the US Treasury Fiscal Data API, plus two for SQL analyt
 | `treasury_query_dataset` | Query any Treasury Fiscal Data endpoint by path, field list, filters, sort, and page — with optional DataCanvas spill |
 | `treasury_get_debt` | Fetch national debt (Debt to the Penny) — latest record, specific date, or date-range series with optional DataCanvas spill |
 | `treasury_get_interest_rates` | Average interest rates Treasury pays on outstanding securities by type (Bills, Notes, Bonds, TIPS, FRN) |
-| `treasury_get_exchange_rates` | Official Treasury statutory exchange rates for ~130 countries, published quarterly |
+| `treasury_get_exchange_rates` | Official Treasury statutory exchange rates for ~165 countries, published quarterly |
 | `treasury_dataframe_describe` | List DataCanvas dataframes materialized by the treasury_* tools with schema, row count, and TTL |
 | `treasury_dataframe_query` | Run a single-statement SELECT against DataCanvas dataframes using standard DuckDB SQL |
 
@@ -61,7 +61,7 @@ Generic parameterized query against any Treasury Fiscal Data endpoint.
 - Pagination via `page_size` (1–10000) and `page_number`
 - Sort by any field, descending with `-` prefix (e.g. `-record_date`)
 - All response values are strings per the API contract — including numeric and date fields; `"null"` means no value
-- Pass `canvas_id` to register results into a named DataCanvas dataframe for SQL via `treasury_dataframe_query` (requires `CANVAS_PROVIDER_TYPE=duckdb`)
+- Pass `canvas_id` to stage the page as a DataCanvas table — the server assigns the name and returns it in `canvas_id`; read its schema with `treasury_dataframe_describe`, then SQL it with `treasury_dataframe_query` (requires `CANVAS_PROVIDER_TYPE=duckdb`)
 
 ---
 
@@ -72,7 +72,7 @@ Convenience tool for national debt (Debt to the Penny) — total public debt out
 - `mode=latest` — most recent business-day record
 - `mode=date` — specific business day (YYYY-MM-DD; API only records debt on market-open days)
 - `mode=series` — date range, sorted newest-first; auto-spills to DataCanvas when the series exceeds 500 rows
-- Records go back to 1993-01-04
+- Records go back to 1993-04-01
 
 ---
 
@@ -88,18 +88,20 @@ Average interest rates the Treasury pays on outstanding securities. Updated mont
 
 ### `treasury_get_exchange_rates`
 
-Official Treasury statutory reporting exchange rates for ~130 countries, published quarterly (March 31, June 30, Sep 30, Dec 31).
+Official Treasury statutory reporting exchange rates for ~165 countries, published quarterly (March 31, June 30, Sep 30, Dec 31).
 
-- Rate expressed as foreign currency units per 1 USD (e.g. Japan-Yen 159.41 means 1 USD = 159.41 JPY)
+- Rate expressed as foreign currency units per 1 USD (a Japan-Yen rate of 159.41 means 1 USD = 159.41 JPY)
 - These are **not** market exchange rates — required by US federal agencies for foreign-currency-to-USD conversions in official reporting
-- Filter to one or more countries by exact name; omit for all ~130 countries in a quarter
-- `mode=series` auto-spills to DataCanvas when results exceed 500 rows (~18,800 rows full history)
+- Filter to one or more countries by exact name; omit for every country in a quarter
+- `mode=latest` returns one row per currency — the operative rate, newest `record_date` and then newest `effective_date`, so an amended rate supersedes the one it replaced and a country holding two legal tenders keeps both
+- Treasury amends a published quarter by reissuing a rate under the same `record_date` with a later `effective_date`, so both dates ride every row; `mixed_record_dates` flags a result whose rows are not all from one quarter
+- `mode=series` auto-spills to DataCanvas when results exceed 500 rows (~19,000 rows full history, back to 2001-03-31)
 
 ---
 
 ### `treasury_dataframe_describe` / `treasury_dataframe_query`
 
-In-conversation SQL analytics over the dataframes that `treasury_query_dataset`, `treasury_get_debt`, `treasury_get_interest_rates`, and `treasury_get_exchange_rates` materialize on a shared DuckDB-backed DataCanvas. Each data-returning call with `canvas_id` adds a `df_XXXXX_XXXXX` handle; pass that handle to `treasury_dataframe_query` for joins, aggregates, window functions, and CTEs — standard DuckDB SQL.
+In-conversation SQL analytics over the dataframes that `treasury_query_dataset`, `treasury_get_debt`, `treasury_get_interest_rates`, and `treasury_get_exchange_rates` materialize on a shared DuckDB-backed DataCanvas. Each data-returning call with `canvas_id` adds a `df_XXXXX_XXXXX` handle; read its columns with `treasury_dataframe_describe`, then pass the handle to `treasury_dataframe_query` for joins, aggregates, window functions, and CTEs — standard DuckDB SQL.
 
 - **Read-only.** Writes, DDL, DROP, COPY, PRAGMA, ATTACH, and external-file table functions are rejected by the SQL gate. System catalogs (`information_schema`, `pg_catalog`, `sqlite_master`, `duckdb_*`) are denied at the bridge layer.
 - **All Treasury columns are VARCHAR.** CAST to `DECIMAL` or `DATE` for arithmetic and date comparisons.
@@ -130,7 +132,7 @@ Agent-friendly output:
 
 - Filter expression echo (`applied_filters`) so agents can verify what was sent to the API
 - Field-label maps on query results (`field_labels`) map raw field names to human-readable labels
-- Enrichment notices on empty results and partial-country mismatches guide the next tool call
+- Enrichment notices on empty results, partial-country mismatches, staged canvas tables, and truncated series guide the next tool call
 - Canvas provenance: source tool, original query parameters, row count, and column schema surfaced by `treasury_dataframe_describe`
 
 ## Getting started
@@ -269,7 +271,7 @@ cp .env.example .env
 
 | Variable | Description | Default |
 |:---------|:------------|:--------|
-| `CANVAS_PROVIDER_TYPE` | Canvas engine. Set to `duckdb` to enable DataCanvas SQL via `treasury_dataframe_*` tools. Set to `none` to disable (e.g. on Cloudflare Workers). | `duckdb` |
+| `CANVAS_PROVIDER_TYPE` | Canvas engine. Unset resolves to `none`, and the `treasury_dataframe_*` tools then reject every call — set it to `duckdb` to enable DataCanvas SQL. | `none` |
 | `CANVAS_TTL_MS` | Per-table TTL for DataCanvas dataframes in milliseconds. | `86400000` (24h) |
 | `MCP_TRANSPORT_TYPE` | Transport: `stdio` or `http`. | `stdio` |
 | `MCP_HTTP_PORT` | Port for HTTP server. | `3010` |

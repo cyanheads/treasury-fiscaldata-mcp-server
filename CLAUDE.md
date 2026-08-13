@@ -1,7 +1,7 @@
 # Developer Protocol
 
 **Server:** @cyanheads/treasury-fiscaldata-mcp-server
-**Version:** 0.1.6
+**Version:** 0.1.7
 **Framework:** [@cyanheads/mcp-ts-core](https://www.npmjs.com/package/@cyanheads/mcp-ts-core) `^0.11.5`
 **Engines:** Bun ≥1.3.0, Node ≥24.0.0
 **MCP SDK:** `@modelcontextprotocol/sdk` ^1.30.0
@@ -21,7 +21,7 @@
 | `treasury_query_dataset` | Query any endpoint by path, fields, filters, sort, page — with optional DataCanvas spill |
 | `treasury_get_debt` | National debt (Debt to the Penny) — latest, specific date, or date-range series |
 | `treasury_get_interest_rates` | Average Treasury interest rates by security type (monthly) |
-| `treasury_get_exchange_rates` | Official statutory exchange rates for ~130 countries (quarterly) |
+| `treasury_get_exchange_rates` | Official statutory exchange rates for ~165 countries (quarterly) |
 | `treasury_dataframe_describe` | List DataCanvas dataframes with schema, row count, and TTL |
 | `treasury_dataframe_query` | Run single-statement SELECT against DataCanvas dataframes via DuckDB |
 

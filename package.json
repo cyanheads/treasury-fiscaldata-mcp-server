@@ -1,8 +1,8 @@
 {
   "name": "@cyanheads/treasury-fiscaldata-mcp-server",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "mcpName": "io.github.cyanheads/treasury-fiscaldata-mcp-server",
-  "description": "Query US Treasury national debt, interest rates, exchange rates, and fiscal datasets via MCP. STDIO or Streamable HTTP.",
+  "description": "Query US Treasury national debt, interest rates, exchange rates, and fiscal datasets via MCP.",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
