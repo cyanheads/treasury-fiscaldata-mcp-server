@@ -361,6 +361,39 @@ describe('getInterestRatesTool', () => {
       });
     });
 
+    it('skips the span probe when a series carries no date bounds at all', async () => {
+      /**
+       * The probe separates "your range missed it" from "no record holds that
+       * name", and only a range can be the former. With neither bound set the
+       * main fetch already ran this exact unbounded filter and matched nothing,
+       * so the probe re-asks a question upstream has answered — and it cannot
+       * answer differently, since an empty match has no dates to report.
+       */
+      const fetchPage = vi.fn(
+        async (_ctx: unknown, _endpoint: string, opts?: { fields?: string[] }) =>
+          opts?.fields?.includes('security_desc')
+            ? monthEnvelope('2026-04-30', CURRENT_MONTH)
+            : makeRatesEnvelope([]),
+      );
+      vi.mocked(getFiscalDataService).mockReturnValue({ fetchPage } as unknown as ReturnType<
+        typeof getFiscalDataService
+      >);
+      const ctx = createMockContext();
+
+      await getInterestRatesTool.handler(
+        getInterestRatesTool.input.parse({ mode: 'series', security_type: 'Nonexistent Series' }),
+        ctx,
+      );
+
+      const notice = String(getEnrichment(ctx).notice);
+      expect(notice).toContain('carries that name');
+      expect(notice).toContain('Treasury Bills');
+      // No range was requested, so the guidance must not send the caller to widen one.
+      expect(notice).not.toContain('widen start_date');
+      // One fetch for the query, one for the current month's types. No probes.
+      expect(fetchPage).toHaveBeenCalledTimes(2);
+    });
+
     it('names the types the current month carries when no record holds the name', async () => {
       useServiceSequence([
         makeRatesEnvelope([]),

@@ -92,9 +92,9 @@ async function currentSecurityTypes(
 async function emptyResultGuidance(
   ctx: Context,
   svc: FiscalData,
-  query: { mode: 'latest' | 'series'; securityType: string },
+  query: { mode: 'latest' | 'series'; securityType: string; hasDateRange: boolean },
 ): Promise<string> {
-  const { mode, securityType } = query;
+  const { mode, securityType, hasDateRange } = query;
 
   if (!securityType) {
     return mode === 'series'
@@ -103,13 +103,18 @@ async function emptyResultGuidance(
   }
 
   /**
-   * Only a series carries a date range, and a real security type simply may not
-   * have been published across the months requested. The probe is unbounded by
-   * date, so it separates that from a name the dataset has never held — and the
-   * span it returns is what makes "widen the range" actionable. Latest mode
-   * sends no range, so an empty match there already means the latter.
+   * A real security type may simply not have been published across the months
+   * requested. The probe is unbounded by date, so it separates that from a name
+   * the dataset has never held — and the span it returns is what makes "widen
+   * the range" actionable.
+   *
+   * The condition is a range having been sent, not the mode. Latest mode sends
+   * none; so does a series given neither bound, and there the main fetch has
+   * already run this exact unbounded filter and matched nothing — the probe
+   * would re-ask a question upstream just answered, and an empty match has no
+   * dates to report back.
    */
-  if (mode === 'series') {
+  if (hasDateRange) {
     const span = await securityTypeSpan(ctx, svc, securityType);
     if (span) {
       return `No records for security_type="${securityType}" in that date range. That type has ${span.records} records, running ${span.oldest} to ${span.newest} (end-of-month) — widen start_date/end_date to cover it.`;
@@ -228,6 +233,9 @@ export const getInterestRatesTool = tool('treasury_get_interest_rates', {
       ratesOpts.filters = [{ field: 'security_desc', operator: 'eq', value: securityType }];
     }
 
+    const hasDateRange =
+      input.mode === 'series' && Boolean(input.start_date?.trim() || input.end_date?.trim());
+
     if (input.mode === 'series') {
       const seriesFilters = ratesOpts.filters ? [...ratesOpts.filters] : [];
       if (input.start_date?.trim()) {
@@ -251,7 +259,9 @@ export const getInterestRatesTool = tool('treasury_get_interest_rates', {
        * play — blaming either one blind sends the caller to check something
        * that was never wrong.
        */
-      ctx.enrich.notice(await emptyResultGuidance(ctx, svc, { mode: input.mode, securityType }));
+      ctx.enrich.notice(
+        await emptyResultGuidance(ctx, svc, { mode: input.mode, securityType, hasDateRange }),
+      );
       return {
         as_of_date: '',
         rates: [],
