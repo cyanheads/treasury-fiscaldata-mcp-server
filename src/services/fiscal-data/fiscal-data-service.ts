@@ -6,8 +6,14 @@
  */
 
 import type { Context } from '@cyanheads/mcp-ts-core';
-import { serviceUnavailable, validationError } from '@cyanheads/mcp-ts-core/errors';
-import { withRetry } from '@cyanheads/mcp-ts-core/utils';
+import {
+  JsonRpcErrorCode,
+  McpError,
+  serviceUnavailable,
+  timeout,
+  validationError,
+} from '@cyanheads/mcp-ts-core/errors';
+import { httpStatusToErrorCode, withRetry } from '@cyanheads/mcp-ts-core/utils';
 import type { FilterCondition, FiscalDataEnvelope } from './types.js';
 
 const BASE_URL = 'https://api.fiscaldata.treasury.gov/services/api/fiscal_service';
@@ -48,96 +54,141 @@ export class FiscalDataService {
     const url = this.buildUrl(endpoint, options);
     ctx.log.debug('Fetching Fiscal Data', { url });
 
-    return withRetry(
+    return await withRetry(
       async () => {
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS);
-        let response: Response;
+        /**
+         * Abort with a `TimeoutError` DOMException rather than a bare abort:
+         * both `fetch` and the response stream reject with the abort *reason*,
+         * so holding the instance lets the catch below identity-match it. That
+         * is what separates "our deadline expired" (classified `Timeout`, which
+         * `withRetry` treats as transient) from "the caller cancelled via
+         * ctx.signal" (rethrown untouched, which short-circuits the retry loop).
+         */
+        const deadlineReason = new DOMException(
+          `Fiscal Data request exceeded ${DEFAULT_TIMEOUT_MS}ms.`,
+          'TimeoutError',
+        );
+        const timeoutId = setTimeout(() => controller.abort(deadlineReason), DEFAULT_TIMEOUT_MS);
+
+        /**
+         * The deadline stays armed until the body has been consumed. `fetch`
+         * resolves as soon as headers arrive, so disarming it there would leave
+         * every `response.text()` below unbounded — an upstream that answers
+         * headers and then stalls mid-body would hold the request open forever.
+         */
         try {
-          response = await fetch(url, {
+          const response = await fetch(url, {
             signal: ctx.signal
               ? AbortSignal.any([ctx.signal, controller.signal])
               : controller.signal,
             headers: { Accept: 'application/json' },
           });
+
+          if (!response.ok) {
+            // 404 returns HTML — detect by content-type before parsing
+            const contentType = response.headers.get('content-type') ?? '';
+            if (contentType.includes('text/html') || response.status === 404) {
+              throw validationError(
+                `Endpoint "${endpoint}" does not exist. Call treasury_list_datasets to find the correct endpoint path.`,
+                {
+                  reason: 'invalid_endpoint',
+                  endpoint,
+                  recovery: {
+                    hint: 'Call treasury_list_datasets to find the correct endpoint path.',
+                  },
+                },
+              );
+            }
+            // Attempt to parse JSON error body (400 responses)
+            const text = await response.text();
+            let msg: string | undefined;
+            try {
+              msg = (JSON.parse(text) as { error?: string; message?: string }).message;
+            } catch {
+              // Non-JSON body — fall through to the status-based message below.
+            }
+            if (msg) {
+              if (/field/i.test(msg) && /does not exist/i.test(msg)) {
+                throw validationError(`Invalid field: ${msg}`, {
+                  reason: 'invalid_field',
+                  recovery: {
+                    hint: 'Call treasury_list_datasets with the endpoint to see available field names.',
+                  },
+                });
+              }
+              if (/operator/i.test(msg)) {
+                throw validationError(`Invalid filter operator: ${msg}`, {
+                  reason: 'invalid_filter',
+                  recovery: {
+                    hint: 'Supported operators: eq, gt, gte, lt, lte, in. Dates use YYYY-MM-DD.',
+                  },
+                });
+              }
+              if (/page/i.test(msg) && /out of range/i.test(msg)) {
+                throw validationError(`Page out of range: ${msg}`, {
+                  reason: 'page_out_of_range',
+                  endpoint,
+                  recovery: {
+                    hint: 'Request a page within total_pages, which the API reports alongside total_count for this query.',
+                  },
+                });
+              }
+            }
+            /**
+             * The status class decides retryability; the message patterns above
+             * only pick a more specific reason. A 4xx is the API's verdict on the
+             * request as written, so it carries a client-error code that
+             * `withRetry` treats as terminal — except 408/425/429, which the
+             * status map keeps transient because waiting is exactly the remedy.
+             * Anything else stays ServiceUnavailable so a genuinely flaky
+             * upstream keeps its retry budget.
+             */
+            const statusCode =
+              (response.status < 500 ? httpStatusToErrorCode(response.status) : undefined) ??
+              JsonRpcErrorCode.ServiceUnavailable;
+            throw new McpError(
+              statusCode,
+              msg
+                ? `Fiscal Data API error: ${msg}`
+                : `Fiscal Data API returned HTTP ${response.status} for endpoint "${endpoint}".`,
+              { status: response.status, endpoint },
+            );
+          }
+
+          // Parse JSON — 200 response
+          const text = await response.text();
+          // Detect HTML masquerading as success
+          if (/^\s*<(!DOCTYPE\s+html|html[\s>])/i.test(text)) {
+            throw serviceUnavailable('Fiscal Data API returned HTML instead of JSON.', {
+              endpoint,
+              retryable: false,
+            });
+          }
+
+          let envelope: FiscalDataEnvelope;
+          try {
+            envelope = JSON.parse(text) as FiscalDataEnvelope;
+          } catch {
+            throw serviceUnavailable('Failed to parse Fiscal Data API response.', {
+              endpoint,
+              retryable: false,
+            });
+          }
+
+          return envelope;
+        } catch (error) {
+          if (controller.signal.reason === deadlineReason) {
+            throw timeout(
+              `Fiscal Data request for endpoint "${endpoint}" exceeded ${DEFAULT_TIMEOUT_MS}ms.`,
+              { endpoint },
+              { cause: error },
+            );
+          }
+          throw error;
         } finally {
           clearTimeout(timeoutId);
         }
-
-        const contentType = response.headers.get('content-type') ?? '';
-
-        // 404 returns HTML — detect by content-type before parsing
-        if (!response.ok) {
-          if (contentType.includes('text/html') || response.status === 404) {
-            throw validationError(
-              `Endpoint "${endpoint}" does not exist. Call treasury_list_datasets to find the correct endpoint path.`,
-              {
-                reason: 'invalid_endpoint',
-                endpoint,
-                recovery: {
-                  hint: 'Call treasury_list_datasets to find the correct endpoint path.',
-                },
-              },
-            );
-          }
-          // Attempt to parse JSON error body (400 responses)
-          const text = await response.text();
-          let parsed: { error?: string; message?: string } = {};
-          try {
-            parsed = JSON.parse(text) as { error?: string; message?: string };
-          } catch {
-            // fall through
-          }
-          if (parsed.message) {
-            const msg = parsed.message;
-            if (/field/i.test(msg) && /does not exist/i.test(msg)) {
-              throw validationError(`Invalid field: ${msg}`, {
-                reason: 'invalid_field',
-                recovery: {
-                  hint: 'Call treasury_list_datasets with the endpoint to see available field names.',
-                },
-              });
-            }
-            if (/operator/i.test(msg)) {
-              throw validationError(`Invalid filter operator: ${msg}`, {
-                reason: 'invalid_filter',
-                recovery: {
-                  hint: 'Supported operators: eq, gt, gte, lt, lte, in. Dates use YYYY-MM-DD.',
-                },
-              });
-            }
-            throw serviceUnavailable(`Fiscal Data API error: ${msg}`, {
-              status: response.status,
-              endpoint,
-            });
-          }
-          throw serviceUnavailable(
-            `Fiscal Data API returned HTTP ${response.status} for endpoint "${endpoint}".`,
-            { status: response.status, endpoint },
-          );
-        }
-
-        // Parse JSON — 200 response
-        const text = await response.text();
-        // Detect HTML masquerading as success
-        if (/^\s*<(!DOCTYPE\s+html|html[\s>])/i.test(text)) {
-          throw serviceUnavailable('Fiscal Data API returned HTML instead of JSON.', {
-            endpoint,
-            retryable: false,
-          });
-        }
-
-        let envelope: FiscalDataEnvelope;
-        try {
-          envelope = JSON.parse(text) as FiscalDataEnvelope;
-        } catch {
-          throw serviceUnavailable('Failed to parse Fiscal Data API response.', {
-            endpoint,
-            retryable: false,
-          });
-        }
-
-        return envelope;
       },
       {
         operation: 'FiscalDataService.fetchPage',
