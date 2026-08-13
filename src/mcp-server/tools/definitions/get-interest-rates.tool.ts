@@ -1,11 +1,11 @@
 /**
  * @fileoverview Average interest rates Treasury pays on outstanding securities
- * by type. Covers Bills, Notes, Bonds, TIPS, FRN, and aggregate totals.
+ * by type — marketable issues, non-marketable series, and aggregate totals.
  * Updated monthly. Two modes: latest snapshot or time series.
  * @module mcp-server/tools/definitions/get-interest-rates
  */
 
-import { tool, z } from '@cyanheads/mcp-ts-core';
+import { type Context, tool, z } from '@cyanheads/mcp-ts-core';
 import { getCanvasBridge, maybeRegisterDataframe } from '@/services/canvas-bridge/canvas-bridge.js';
 import { getFiscalDataService } from '@/services/fiscal-data/fiscal-data-service.js';
 
@@ -33,21 +33,106 @@ const LATEST_PAGE_SIZE = 100;
  */
 const SERIES_PREVIEW_LIMIT = 20;
 
-const SECURITY_DESCS = [
-  'Treasury Bills',
-  'Treasury Notes',
-  'Treasury Bonds',
-  'Treasury Inflation-Protected Securities (TIPS)',
-  'Treasury Floating Rate Notes (FRN)',
-  'Total Marketable',
-  'Total Non-marketable',
-  'Total Interest-bearing Debt',
-] as const;
+/** The Fiscal Data client, as the accessor hands it back. */
+type FiscalData = ReturnType<typeof getFiscalDataService>;
+
+/**
+ * Record count and date span for one security type across the whole dataset, or
+ * undefined when no record carries that name. Two one-row probes rather than a
+ * full pull, so the cost stays flat as the corpus grows.
+ */
+async function securityTypeSpan(
+  ctx: Context,
+  svc: FiscalData,
+  securityType: string,
+): Promise<{ records: number; oldest: string; newest: string } | undefined> {
+  const probe: Parameters<FiscalData['fetchPage']>[2] = {
+    filters: [{ field: 'security_desc', operator: 'eq', value: securityType }],
+    fields: ['record_date'],
+    pageSize: 1,
+  };
+  const [newest, oldest] = await Promise.all([
+    svc.fetchPage(ctx, RATES_ENDPOINT, { ...probe, sort: '-record_date' }),
+    svc.fetchPage(ctx, RATES_ENDPOINT, { ...probe, sort: 'record_date' }),
+  ]);
+  const records = newest.meta['total-count'];
+  if (records === 0) return;
+  return {
+    records,
+    newest: newest.data[0]?.['record_date'] ?? '',
+    oldest: oldest.data[0]?.['record_date'] ?? '',
+  };
+}
+
+/** The security types the most recently published month carries. */
+async function currentSecurityTypes(
+  ctx: Context,
+  svc: FiscalData,
+): Promise<{ asOf: string; types: string[] }> {
+  const page = await svc.fetchPage(ctx, RATES_ENDPOINT, {
+    fields: ['record_date', 'security_desc'],
+    sort: '-record_date',
+    pageSize: LATEST_PAGE_SIZE,
+  });
+  const asOf = page.data[0]?.['record_date'] ?? '';
+  const types = [
+    ...new Set(page.data.filter((r) => r['record_date'] === asOf).map((r) => r['security_desc'])),
+  ].filter((desc): desc is string => Boolean(desc));
+  return { asOf, types };
+}
+
+/**
+ * Guidance for a query that matched nothing, read off the data rather than a
+ * vocabulary written down here. Which security types Treasury publishes is not
+ * fixed — Foreign Series was published through March 2026, Special Purpose
+ * Vehicle first appeared in 2020 — so a list compiled at authoring time is
+ * wrong the moment upstream moves, and being right about it is the whole
+ * service this notice performs.
+ */
+async function emptyResultGuidance(
+  ctx: Context,
+  svc: FiscalData,
+  query: { mode: 'latest' | 'series'; securityType: string },
+): Promise<string> {
+  const { mode, securityType } = query;
+
+  if (!securityType) {
+    return mode === 'series'
+      ? 'No interest rate records found in that date range. Records are end-of-month — widen start_date/end_date to cover a month end.'
+      : 'No interest rate records found.';
+  }
+
+  /**
+   * Only a series carries a date range, and a real security type simply may not
+   * have been published across the months requested. The probe is unbounded by
+   * date, so it separates that from a name the dataset has never held — and the
+   * span it returns is what makes "widen the range" actionable. Latest mode
+   * sends no range, so an empty match there already means the latter.
+   */
+  if (mode === 'series') {
+    const span = await securityTypeSpan(ctx, svc, securityType);
+    if (span) {
+      return `No records for security_type="${securityType}" in that date range. That type has ${span.records} records, running ${span.oldest} to ${span.newest} (end-of-month) — widen start_date/end_date to cover it.`;
+    }
+  }
+
+  const { asOf, types } = await currentSecurityTypes(ctx, svc);
+  const segments = [
+    `No records for security_type="${securityType}" — no record in this dataset carries that name.`,
+  ];
+  if (types.length > 0) {
+    segments.push(`Security types in the most recent month (${asOf}): ${types.join(', ')}.`);
+    segments.push(
+      'Types Treasury no longer publishes are absent from that list and still reachable — filtering on one returns its last published month.',
+    );
+  }
+  return segments.join(' ');
+}
 
 export const getInterestRatesTool = tool('treasury_get_interest_rates', {
   title: 'Get Treasury Interest Rates',
   description:
-    'Average interest rates Treasury pays on its outstanding securities by security type. Answers "what is the government\'s cost of borrowing?" Covers Bills, Notes, Bonds, TIPS, Floating Rate Notes, and aggregate marketable/non-marketable totals. Rates are percentages, not basis points. Updated monthly (end-of-month records). Mode "latest" returns the most recent month\'s rates for all or one security type; "series" returns a time history, staging the result as a DataCanvas table when canvas_id is set or the range matches more than 200 rows — read the table\'s column schema with treasury_dataframe_describe, then run SQL over it with treasury_dataframe_query.',
+    'Average interest rates Treasury pays on its outstanding securities by security type. Answers "what is the government\'s cost of borrowing?" Covers every type Treasury reports — marketable issues, non-marketable series, and the aggregate totals — and which types it reports changes over the years, so omit security_type to see the ones a given period carries. Rates are percentages, not basis points. Updated monthly (end-of-month records). Mode "latest" returns the most recent month\'s rates for all or one security type; "series" returns a time history, staging the result as a DataCanvas table when canvas_id is set or the range matches more than 200 rows — read the table\'s column schema with treasury_dataframe_describe, then run SQL over it with treasury_dataframe_query.',
   annotations: { readOnlyHint: true, idempotentHint: true },
 
   enrichment: {
@@ -61,7 +146,7 @@ export const getInterestRatesTool = tool('treasury_get_interest_rates', {
       .string()
       .optional()
       .describe(
-        'Guidance when no records match (lists valid security types, or notes the empty date range), when the inline series is a preview, or when the series was staged as a DataCanvas table.',
+        'Guidance when no records match (where the requested security type does have records, or the types the most recent month carries, or the empty date range), when the inline series is a preview, or when the series was staged as a DataCanvas table.',
       ),
   },
 
@@ -71,10 +156,10 @@ export const getInterestRatesTool = tool('treasury_get_interest_rates', {
       .default('latest')
       .describe('"latest" returns the most recent month\'s rates. "series" returns a time range.'),
     security_type: z
-      .enum(SECURITY_DESCS)
+      .string()
       .optional()
       .describe(
-        'Filter to one security type. Omit for all types. Use the exact string — the API does exact-match filtering on security_desc.',
+        'Filter to one security type, matched exactly against the security_desc field — full case and punctuation, as in "Treasury Inflation-Protected Securities (TIPS)". Omit for every type in the period, which is how to read the set of types on offer; the response names them when a filter matches nothing.',
       ),
     start_date: z
       .string()
@@ -132,14 +217,15 @@ export const getInterestRatesTool = tool('treasury_get_interest_rates', {
 
   async handler(input, ctx) {
     const svc = getFiscalDataService();
+    const securityType = input.security_type?.trim() ?? '';
 
     const ratesOpts: Parameters<typeof svc.fetchPage>[2] = {
       sort: '-record_date',
       pageSize: input.mode === 'latest' ? LATEST_PAGE_SIZE : SERIES_PAGE_SIZE,
     };
 
-    if (input.security_type?.trim()) {
-      ratesOpts.filters = [{ field: 'security_desc', operator: 'eq', value: input.security_type }];
+    if (securityType) {
+      ratesOpts.filters = [{ field: 'security_desc', operator: 'eq', value: securityType }];
     }
 
     if (input.mode === 'series') {
@@ -159,21 +245,13 @@ export const getInterestRatesTool = tool('treasury_get_interest_rates', {
 
     if (totalRecords === 0) {
       /**
-       * Name every constraint the query actually carried. A date range is only
-       * sent in series mode, and a filtered security type is not the suspect
-       * when a range is also in play — blaming either one alone sends the caller
-       * to check something that was never the problem.
+       * Name only the constraint that was actually the problem. A date range is
+       * sent in series mode alone, and a security type that does hold records
+       * elsewhere in the dataset is not the suspect when a range is also in
+       * play — blaming either one blind sends the caller to check something
+       * that was never wrong.
        */
-      const inRange = input.mode === 'series' ? ' in that date range' : '';
-      const rangeHint =
-        input.mode === 'series'
-          ? ' Records are end-of-month — widen start_date/end_date to cover a month end.'
-          : '';
-      ctx.enrich.notice(
-        input.security_type
-          ? `No records found for security_type="${input.security_type}"${inRange}. Valid values: ${SECURITY_DESCS.join(', ')}.${rangeHint}`
-          : `No interest rate records found${inRange}.${rangeHint}`,
-      );
+      ctx.enrich.notice(await emptyResultGuidance(ctx, svc, { mode: input.mode, securityType }));
       return {
         as_of_date: '',
         rates: [],
@@ -214,7 +292,7 @@ export const getInterestRatesTool = tool('treasury_get_interest_rates', {
           sourceTool: 'treasury_get_interest_rates',
           queryParams: {
             mode: input.mode,
-            security_type: input.security_type,
+            security_type: securityType || undefined,
             start_date: input.start_date,
             end_date: input.end_date,
           },

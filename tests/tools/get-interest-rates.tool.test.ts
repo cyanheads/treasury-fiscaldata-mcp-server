@@ -67,6 +67,25 @@ const SAMPLE_ROWS: RateRow[] = [
   },
 ];
 
+/** Install a service whose every fetchPage answers `envelope`, and hand back the spy. */
+function useService(envelope: FiscalDataEnvelope) {
+  const fetchPage = vi.fn().mockResolvedValue(envelope);
+  vi.mocked(getFiscalDataService).mockReturnValue({ fetchPage } as unknown as ReturnType<
+    typeof getFiscalDataService
+  >);
+  return fetchPage;
+}
+
+/** Install a service that answers each fetchPage call from `envelopes` in order. */
+function useServiceSequence(envelopes: FiscalDataEnvelope[]) {
+  const fetchPage = vi.fn();
+  for (const envelope of envelopes) fetchPage.mockResolvedValueOnce(envelope);
+  vi.mocked(getFiscalDataService).mockReturnValue({ fetchPage } as unknown as ReturnType<
+    typeof getFiscalDataService
+  >);
+  return fetchPage;
+}
+
 /** Install a canvas bridge whose registration succeeds under `tableName`. */
 function useBridge(tableName: string, rowCount: number) {
   const registerDataframe = vi.fn().mockResolvedValue({
@@ -128,6 +147,109 @@ describe('getInterestRatesTool', () => {
     expect(result.rates[0]?.avg_interest_rate_pct).toBe('3.696');
   });
 
+  describe('security_type filter', () => {
+    it('sends an exact-match security_desc filter in latest mode', async () => {
+      const fetchPage = useService(makeRatesEnvelope(SAMPLE_ROWS));
+      const ctx = createMockContext();
+
+      await getInterestRatesTool.handler(
+        getInterestRatesTool.input.parse({ mode: 'latest', security_type: 'Treasury Bills' }),
+        ctx,
+      );
+
+      expect(fetchPage.mock.calls[0]?.[2]).toMatchObject({
+        filters: [{ field: 'security_desc', operator: 'eq', value: 'Treasury Bills' }],
+      });
+    });
+
+    it('reaches a non-marketable security type the enum used to reject', async () => {
+      const ffb: RateRow = {
+        record_date: '2026-07-31',
+        security_type_desc: 'Marketable',
+        security_desc: 'Federal Financing Bank',
+        avg_interest_rate_amt: '2.383',
+      };
+      const fetchPage = useService(makeRatesEnvelope([ffb]));
+      const ctx = createMockContext();
+
+      const input = getInterestRatesTool.input.parse({
+        mode: 'latest',
+        security_type: 'Federal Financing Bank',
+      });
+      const result = await getInterestRatesTool.handler(input, ctx);
+
+      expect(fetchPage.mock.calls[0]?.[2]).toMatchObject({
+        filters: [{ field: 'security_desc', operator: 'eq', value: 'Federal Financing Bank' }],
+      });
+      expect(result.rates).toEqual([
+        {
+          record_date: '2026-07-31',
+          security_type: 'Marketable',
+          security_desc: 'Federal Financing Bank',
+          avg_interest_rate_pct: '2.383',
+        },
+      ]);
+      const text = (getInterestRatesTool.format!(result)[0] as { text: string }).text;
+      expect(text).toContain('Federal Financing Bank');
+      expect(text).toContain('2.383%');
+    });
+
+    it('reaches a security type retired from the current month', async () => {
+      const foreignSeries: RateRow = {
+        record_date: '2026-03-31',
+        security_type_desc: 'Non-marketable',
+        security_desc: 'Foreign Series',
+        avg_interest_rate_amt: '4.150',
+      };
+      useService(makeRatesEnvelope([foreignSeries]));
+      const ctx = createMockContext();
+
+      const result = await getInterestRatesTool.handler(
+        getInterestRatesTool.input.parse({ mode: 'latest', security_type: 'Foreign Series' }),
+        ctx,
+      );
+
+      expect(result.as_of_date).toBe('2026-03-31');
+      expect(result.rates[0]?.security_desc).toBe('Foreign Series');
+    });
+
+    it('treats a blank security_type as no filter, the way form clients send it', async () => {
+      const fetchPage = useService(makeRatesEnvelope(SAMPLE_ROWS));
+      const ctx = createMockContext();
+
+      const result = await getInterestRatesTool.handler(
+        getInterestRatesTool.input.parse({ mode: 'latest', security_type: '' }),
+        ctx,
+      );
+
+      expect(fetchPage.mock.calls[0]?.[2]).not.toHaveProperty('filters');
+      expect(result.rates).toHaveLength(SAMPLE_ROWS.length);
+    });
+
+    it('carries the security filter alongside the date bounds in series mode', async () => {
+      const fetchPage = useService(makeRatesEnvelope(SAMPLE_ROWS));
+      const ctx = createMockContext();
+
+      await getInterestRatesTool.handler(
+        getInterestRatesTool.input.parse({
+          mode: 'series',
+          security_type: 'Treasury Notes',
+          start_date: '2026-01-31',
+          end_date: '2026-04-30',
+        }),
+        ctx,
+      );
+
+      expect(fetchPage.mock.calls[0]?.[2]).toMatchObject({
+        filters: [
+          { field: 'security_desc', operator: 'eq', value: 'Treasury Notes' },
+          { field: 'record_date', operator: 'gte', value: '2026-01-31' },
+          { field: 'record_date', operator: 'lte', value: '2026-04-30' },
+        ],
+      });
+    });
+  });
+
   it('returns empty rates with enrichment notice for zero results', async () => {
     vi.mocked(getFiscalDataService).mockReturnValue({
       fetchPage: vi.fn().mockResolvedValue(makeRatesEnvelope([])),
@@ -151,23 +273,136 @@ describe('getInterestRatesTool', () => {
       } as unknown as ReturnType<typeof getFiscalDataService>);
     }
 
-    it('names the date range as a suspect when a valid security type finds nothing', async () => {
-      useEmpty();
+    /** One record_date's worth of rows, one per security type. */
+    function monthEnvelope(recordDate: string, descs: string[]): FiscalDataEnvelope {
+      return makeRatesEnvelope(
+        descs.map((desc) => ({
+          record_date: recordDate,
+          security_type_desc: 'Non-marketable',
+          security_desc: desc,
+          avg_interest_rate_amt: '3.500',
+        })),
+      );
+    }
+
+    /** A one-row probe answer carrying `total` as the upstream match count. */
+    function probeEnvelope(recordDate: string, total: number): FiscalDataEnvelope {
+      return makeSeriesEnvelope(
+        [
+          {
+            record_date: recordDate,
+            security_type_desc: 'Non-marketable',
+            security_desc: 'Foreign Series',
+            avg_interest_rate_amt: '4.150',
+          },
+        ],
+        total,
+      );
+    }
+
+    const CURRENT_MONTH = ['Treasury Bills', 'Federal Financing Bank', 'Government Account Series'];
+
+    it('names the date range as the suspect when the security type has records elsewhere', async () => {
+      const fetchPage = useServiceSequence([
+        makeRatesEnvelope([]),
+        probeEnvelope('2026-03-31', 303),
+        probeEnvelope('2001-01-31', 303),
+      ]);
       const ctx = createMockContext();
 
       await getInterestRatesTool.handler(
         getInterestRatesTool.input.parse({
           mode: 'series',
-          security_type: 'Treasury Bills',
-          start_date: '2099-01-01',
-          end_date: '2099-12-31',
+          security_type: 'Foreign Series',
+          start_date: '2026-06-01',
+          end_date: '2026-08-31',
         }),
         ctx,
       );
 
       const notice = String(getEnrichment(ctx).notice);
-      expect(notice).toContain('Treasury Bills');
+      expect(notice).toContain('Foreign Series');
+      expect(notice).toContain('303 records');
+      expect(notice).toContain('2001-01-31 to 2026-03-31');
       expect(notice).toContain('start_date');
+      // The type is real — the guidance must never say otherwise.
+      expect(notice).not.toContain('carries that name');
+      expect(fetchPage).toHaveBeenCalledTimes(3);
+    });
+
+    it('probes the whole dataset for the type, unbounded by the requested range', async () => {
+      const fetchPage = useServiceSequence([
+        makeRatesEnvelope([]),
+        probeEnvelope('2026-03-31', 303),
+        probeEnvelope('2001-01-31', 303),
+      ]);
+      const ctx = createMockContext();
+
+      await getInterestRatesTool.handler(
+        getInterestRatesTool.input.parse({
+          mode: 'series',
+          security_type: 'Foreign Series',
+          start_date: '2026-06-01',
+          end_date: '2026-08-31',
+        }),
+        ctx,
+      );
+
+      const securityOnly = [{ field: 'security_desc', operator: 'eq', value: 'Foreign Series' }];
+      expect(fetchPage.mock.calls[1]?.[2]).toMatchObject({
+        filters: securityOnly,
+        sort: '-record_date',
+        pageSize: 1,
+      });
+      expect(fetchPage.mock.calls[2]?.[2]).toMatchObject({
+        filters: securityOnly,
+        sort: 'record_date',
+        pageSize: 1,
+      });
+    });
+
+    it('names the types the current month carries when no record holds the name', async () => {
+      useServiceSequence([
+        makeRatesEnvelope([]),
+        makeRatesEnvelope([]),
+        makeRatesEnvelope([]),
+        monthEnvelope('2026-07-31', CURRENT_MONTH),
+      ]);
+      const ctx = createMockContext();
+
+      await getInterestRatesTool.handler(
+        getInterestRatesTool.input.parse({
+          mode: 'series',
+          security_type: 'Treasury Bils',
+          start_date: '2026-01-31',
+          end_date: '2026-07-31',
+        }),
+        ctx,
+      );
+
+      const notice = String(getEnrichment(ctx).notice);
+      expect(notice).toContain('no record in this dataset carries that name');
+      expect(notice).toContain('2026-07-31');
+      for (const desc of CURRENT_MONTH) expect(notice).toContain(desc);
+      // The name is wrong, so the range was never the problem.
+      expect(notice).not.toContain('widen start_date');
+    });
+
+    it('lists the current month rather than a vocabulary compiled at authoring time', async () => {
+      useServiceSequence([makeRatesEnvelope([]), monthEnvelope('2026-07-31', CURRENT_MONTH)]);
+      const ctx = createMockContext();
+
+      await getInterestRatesTool.handler(
+        getInterestRatesTool.input.parse({ mode: 'latest', security_type: 'Treasury Bils' }),
+        ctx,
+      );
+
+      const notice = String(getEnrichment(ctx).notice);
+      expect(notice).toContain('Federal Financing Bank');
+      expect(notice).toContain('Government Account Series');
+      expect(notice).toContain('no longer publishes');
+      // Latest mode sends no date range, so it has none to blame.
+      expect(notice).not.toContain('start_date');
     });
 
     it('does not blame a date range in latest mode, where none was sent', async () => {
