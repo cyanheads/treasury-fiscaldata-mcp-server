@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.1.6](changelog/0.1.x/0.1.6.md) — 2026-08-12
+
+treasury_get_debt pages the full debt series and discloses its inline preview, rerouted errors carry their declared recovery hints, and 4xx responses stop burning the retry budget — on mcp-ts-core ^0.11.5 and TypeScript 7
+
 ## [0.1.5](changelog/0.1.x/0.1.5.md) — 2026-06-20
 
 Adopt mcp-ts-core ^0.10.9 — check-dependency-specifiers + plugin-manifest packaging gates, ctx.content collector, fresh-scaffold devcheck guards; @duckdb/node-api and @types/node bumps
