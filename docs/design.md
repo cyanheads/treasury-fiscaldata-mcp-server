@@ -9,7 +9,7 @@
 | `treasury_list_datasets` | Browse the catalog of available Fiscal Data datasets with endpoints, field names, and update cadence | `category` (optional filter), `search` (optional keyword) | `readOnlyHint`, `idempotentHint` |
 | `treasury_query_dataset` | Generic parameterized query against any dataset by endpoint path — fields, filters, sort, pagination, and optional DataCanvas spillover for large results | `endpoint`, `fields[]`, `filters[]`, `sort`, `page_size`, `page_number`, `canvas_id` | `readOnlyHint`, `idempotentHint` |
 | `treasury_get_debt` | National debt (Debt to the Penny) — latest, a specific date, or a time series with DataCanvas for multi-year pulls | `mode` (`latest`\|`date`\|`series`), `date`, `start_date`, `end_date`, `canvas_id` | `readOnlyHint`, `idempotentHint` |
-| `treasury_get_interest_rates` | Average interest rates Treasury pays by security type (Bills, Notes, Bonds, TIPS, FRN) — latest snapshot or time series | `security_type` (optional filter), `mode` (`latest`\|`series`), `start_date`, `end_date`, `canvas_id` | `readOnlyHint`, `idempotentHint` |
+| `treasury_get_interest_rates` | Average interest rates Treasury pays by security type — marketable issues, non-marketable series, and aggregate totals; latest snapshot or time series | `security_type` (optional filter), `mode` (`latest`\|`series`), `start_date`, `end_date`, `canvas_id` | `readOnlyHint`, `idempotentHint` |
 | `treasury_get_exchange_rates` | Official Treasury reporting exchange rates for one or more currencies — most recently published quarter or historical series. These are statutory rates for federal USD reporting, not market rates. | `countries[]` (optional), `mode` (`latest`\|`series`), `start_date`, `end_date`, `canvas_id` | `readOnlyHint`, `idempotentHint` |
 | `treasury_dataframe_describe` | List DataCanvas dataframes materialized by treasury tools — schema, row count, TTL, and source params | `name` (optional, filter to one) | `readOnlyHint`, `idempotentHint`, `openWorldHint: false` |
 | `treasury_dataframe_query` | Run a SELECT against DataCanvas dataframes registered by treasury data tools | `sql`, `register_as`, `preview`, `row_limit` | `readOnlyHint`, `idempotentHint`, `openWorldHint: false` |
@@ -84,7 +84,7 @@ No API key env var — the API is fully keyless.
 
 **Purpose:** Browse the catalog of all available Fiscal Data endpoints. Returns the endpoint path, dataset name, description, update cadence, and field list. Required context for `treasury_query_dataset` — agents need the path and field names to construct a useful generic query.
 
-**Upstream:** No network calls. Returns from an embedded static catalog (`datasets.ts`) bundled with the server. The catalog is curated from the official API documentation endpoint table.
+**Upstream:** No network calls. Returns from an embedded static catalog (`datasets.ts`) bundled with the server. Entries are curated from Treasury's published dataset directory and verified against the live API by `bun run verify:catalog`, which probes each endpoint and fails on a path that does not answer or a field name the endpoint does not have.
 
 **Input schema:**
 ```ts
@@ -299,30 +299,23 @@ errors: [
 
 ### `treasury_get_interest_rates`
 
-**Purpose:** Average interest rates Treasury pays on its outstanding securities, by security type. Answers "what is the government's cost of borrowing?" Covers Bills, Notes, Bonds, TIPS, Floating Rate Notes, and aggregate marketable/non-marketable totals. Updated monthly (end-of-month records). Two modes: `latest` (most recent month's rates for all or one security type) and `series` (time history for a security type).
+**Purpose:** Average interest rates Treasury pays on its outstanding securities, by security type. Answers "what is the government's cost of borrowing?" Covers every type Treasury reports — marketable issues, non-marketable series, and the aggregate totals. Updated monthly (end-of-month records). Two modes: `latest` (most recent month's rates for all or one security type) and `series` (time history for a security type).
 
 **Upstream:** `GET /v2/accounting/od/avg_interest_rates?sort=-record_date`
 
-**Verified fields from live API:** `record_date` (DATE), `security_type_desc` (STRING: `"Marketable"` | `"Non-marketable"` | `"Interest-bearing Debt"`), `security_desc` (STRING: `"Treasury Bills"`, `"Treasury Notes"`, `"Treasury Bonds"`, `"Treasury Inflation-Protected Securities (TIPS)"`, `"Treasury Floating Rate Notes (FRN)"`, plus aggregates `"Total Marketable"`, `"Total Non-marketable"`, `"Total Interest-bearing Debt"`), `avg_interest_rate_amt` (PERCENTAGE as string, e.g., `"3.696"`), `src_line_nbr` (INTEGER).
+**Verified fields from live API:** `record_date` (DATE), `security_type_desc` (STRING: `"Marketable"` | `"Non-marketable"` | `"Interest-bearing Debt"`), `security_desc` (STRING — the individual security type, e.g. `"Treasury Bills"`, `"Government Account Series"`, or an aggregate such as `"Total Interest-bearing Debt"`), `avg_interest_rate_amt` (PERCENTAGE as string, e.g., `"3.696"`), `src_line_nbr` (INTEGER).
 
-> **Filtering note:** The `security_type` input parameter filters on `security_desc` (not `security_type_desc`). The Zod enum values must match `security_desc` exactly (e.g., `"Total Interest-bearing Debt"`, not `"Interest-bearing Debt"`). The `security_type_desc` field is a broader category and cannot be used alone to reach individual security types.
+> **Filtering note:** The `security_type` input parameter filters on `security_desc` (not `security_type_desc`), and the value must match exactly — full capitalization and parenthetical qualifiers included (`"Total Interest-bearing Debt"`, not `"Interest-bearing Debt"`). The `security_type_desc` field is a broader category and cannot be used alone to reach individual security types.
+
+> **Decision — `security_type` is a string, not an enum.** The `security_desc` vocabulary moves: 16 distinct values appear in the current month against 22 across the full history, the difference being types retired (`Foreign Series` through 2026-03, `Hope Bonds`, `R.E.A. Series`), renamed (`Treasury Inflation-Indexed Notes`/`Bonds` → TIPS), added (`Special Purpose Vehicle` from 2020-05), and one upstream typo published for a single month (`TotalMarketable`). No enum can be right for both the current month and a historical `mode=series` range at once, and nothing here would catch upstream drift, so a closed list decays into rejecting values that plainly exist. What the enum bought — catching a typo before a round trip — is preserved on the response instead: an empty match names the security types read back off the data, so the guidance is current by construction.
 
 **Input schema:**
 ```ts
 z.object({
   mode: z.enum(['latest', 'series']).default('latest')
     .describe('"latest" returns the most recent month\'s rates. "series" returns a time range.'),
-  security_type: z.enum([
-    'Treasury Bills',
-    'Treasury Notes',
-    'Treasury Bonds',
-    'Treasury Inflation-Protected Securities (TIPS)',
-    'Treasury Floating Rate Notes (FRN)',
-    'Total Marketable',
-    'Total Non-marketable',
-    'Total Interest-bearing Debt',
-  ]).optional()
-    .describe('Filter to one security type. Omit for all types. Use exact string — the API does exact-match filtering on security_desc.'),
+  security_type: z.string().optional()
+    .describe('Filter to one security type, matched exactly against the security_desc field — full case and punctuation, as in "Treasury Inflation-Protected Securities (TIPS)". Omit for every type in the period, which is how to read the set of types on offer; the response names them when a filter matches nothing.'),
   start_date: z.string().optional()
     .describe('ISO 8601 start date for mode=series (YYYY-MM-DD, must be end-of-month for meaningful results).'),
   end_date: z.string().optional()
@@ -352,7 +345,9 @@ z.object({
 
 **Bounds.** `mode=series` fetches one page of 10,000, which covers the whole 4,993-row corpus; `mode=latest` fetches 100 and keeps the newest `record_date`, against an all-time widest month of 17 rows and 22 distinct `security_desc` values ever published. The inline `rates` array is capped at 20 in series mode **unconditionally** — not only when a canvas absorbed the remainder, since the default install has no canvas and used to return the entire fetched page.
 
-**Errors:** Baseline errors only (upstream 5xx, timeout). No domain errors — if `security_type` doesn't match, API returns empty rows; handler surfaces `total_records: 0` with an enrichment notice listing valid security descriptions. The notice names only the constraints the query actually carried: a date range is sent in series mode alone, so latest mode never blames one.
+**Errors:** Baseline errors only (upstream 5xx, timeout). No domain errors — if `security_type` doesn't match, the API returns empty rows and the handler surfaces `total_records: 0` with enrichment guidance.
+
+**Empty-result guidance.** The notice names only the constraint that was actually the problem, and reads the vocabulary off the data rather than restating one written here. A date range is sent in series mode alone, so latest mode never blames one — and there an empty match is unambiguous, since the request carried no bound but the security type. In series mode a pair of one-row probes (same `security_desc` filter, no date bound, sorted each way) separates *absent from this range* from *absent from the dataset*: when the type has records, the notice reports its count and date span so "widen the range" is actionable and never claims a real type does not exist; when it has none, the name is the fault and the range is not mentioned. In that case the most recent month is fetched and its security types are listed. All three probes are on the empty path only, so a matching query costs one upstream call as before.
 
 **Annotations:** `readOnlyHint: true`, `idempotentHint: true`
 
@@ -678,7 +673,7 @@ One API call covers most series queries — 10,000 is the API's hard `page[size]
 
 ## Known Limitations
 
-- **No programmatic dataset catalog.** The API has no `/datasets` discovery endpoint — the catalog must be embedded as static data in the server and maintained as Treasury adds datasets. The embedded catalog covers 17 curated endpoints out of the ~80 the API documents, and may drift as Treasury adds datasets; anything outside it is still reachable by passing the path to `treasury_query_dataset`.
+- **No programmatic dataset catalog.** The API has no `/datasets` discovery endpoint — the catalog must be embedded as static data in the server and maintained as Treasury moves datasets. The embedded catalog covers 17 curated endpoints out of the 179 Treasury publishes across 53 datasets; anything outside it is still reachable by passing the path to `treasury_query_dataset`. Treasury moves an endpoint between the `/v1/` and `/v2/` prefix and renames one outright without leaving a redirect, so drift is silent — `bun run verify:catalog` is what surfaces it.
 - **All values are strings.** The API returns every value (including dates, numbers, currencies) as a JSON string. All parsing and type conversion is the consumer's responsibility. `"null"` is a string, not JSON null. Verified: MTS table 5 `current_fytd_gross_outly_amt` returns `"null"` for many rows.
 - **Empty results ≠ 404.** Filtering for a date with no data (weekend, holiday) or an unrecognized country/security returns `200 OK` with `data:[]` and `meta["total-count"]:0`. Service layer must detect this pattern explicitly — it cannot rely on HTTP status codes for "not found" domain conditions.
 - **`CURRENCY0` dataType variant.** Some endpoints (e.g., `operating_cash_balance`) use `CURRENCY0` in `meta.dataTypes` (whole-dollar amounts, no cents). The service layer and embedded catalog should handle this alongside `CURRENCY`.
@@ -710,7 +705,7 @@ One API call covers most series queries — 10,000 is the API's hard `page[size]
 
 **Decision:** `treasury_list_datasets` serves from an embedded `datasets.ts` map, not a live API call.
 
-**Rationale:** The Treasury API has no `/datasets` endpoint (verified — returns 404 HTML). The catalog is available only via the HTML documentation page. Embedding is the only option. The catalog is stable (Treasury rarely removes datasets; new datasets are added infrequently). A static catalog with a clear update path (sync against the API docs table) is preferable to scraping HTML on every request.
+**Rationale:** The Treasury API has no `/datasets` endpoint (verified — returns 404 HTML). The catalog is available only via the HTML documentation page. Embedding is the only option, and serving it costs no round trip. What embedding does not buy is accuracy: the catalog is the documented first step, and the recovery hints on `invalid_endpoint` and `invalid_field` both point back at it, so a stale entry hands the caller a value that fails and then routes them to the source of the failure. `bun run verify:catalog` closes that loop — it probes every entry against the live API and fails on a path that does not answer or a field the endpoint does not have. It is a script rather than a test because it needs the network; the catalog's own shape (unique paths, query-legal field names, `record_date` on every entry) is pinned offline in the `treasury_list_datasets` suite.
 
 ### 4. Exchange rate disambiguation — statutory vs. market rates
 
@@ -771,3 +766,15 @@ One API call covers most series queries — 10,000 is the API's hard `page[size]
 **Decision:** Every path that can return less than it matched discloses it. A fetch bounded by a page size or a row bound reports what it retrieved beside the upstream match (`retrieved_records` against `total_records`); an inline array capped below what was retrieved calls `ctx.enrich.truncated`; a query capped by `row_limit` sets `row_count_capped`; staging that was requested and produced no table says why. Where a bound can be removed rather than disclosed, it is: `treasury_get_exchange_rates` asks for the newest quarter by its own date instead of taking a fixed slice of the newest rows, and walks pages for a series rather than stopping at one.
 
 **Rationale:** Silent incompleteness is the worst failure this surface can have, because the caller cannot detect it and the response looks authoritative. Three shapes produced it. A fixed fetch bound sized against a set that grows past it — a 200-row page against a quarter that reached 201, dropping a currency with nothing in the response to say so. A cap applied only on the branch that had somewhere to put the remainder — `canvasId ? rows.slice(0, 20) : rows` returns everything when no canvas is configured, which is the default install. And a cap the row arithmetic cannot see — `row_limit` produces exactly the rows it permits, so `row_count > rows.length` never fires and 1,000 rows of 19,000 read as complete. The test each of them fails: from the response alone, can the caller tell a complete answer from a truncated one? Disclosure has to reach both `structuredContent` and `content[]`, which is why it rides `ctx.enrich` or an output field rendered by `format()`, never `format()` text alone.
+
+### 14. A catalog entry follows its dataset, not an endpoint that shares its name
+
+**Decision:** When a catalog path stops resolving, the replacement is the endpoint serving the subject the entry's name, description, and fields describe — even where a live endpoint carries the old path's name. `Securities Outstanding` resolved to `/v1/debt/mspd/mspd_table_1` (MSPD Summary of Treasury Securities Outstanding) rather than to `/v1/accounting/od/securities_outstanding`, which does answer but belongs to Electronic Securities Transactions and reports TreasuryDirect holdings only.
+
+**Rationale:** The entry described marketable and non-marketable securities outstanding split into debt held by the public and intragovernmental holdings, and its field names were near-misses of MSPD table 1's (`outstanding_held_public_mil_amt` for `debt_held_public_mil_amt`). Repointing on the name match would have kept the entry green while silently changing what it returns — a caller who picked it for the public/intragovernmental split would get a narrower dataset that has no such split, with nothing in the catalog to say so. A path that resolves is the gate's bar, not the catalog's; the catalog's bar is that the data answers the description a caller chose it from.
+
+### 15. Field lists mirror the endpoint, except where the surface is unmanageable
+
+**Decision:** Each entry lists the endpoint's full field set. `treasury_offset_program` (42 fields) and `auctions_query` (114) carry a curated subset instead, and say so in the description.
+
+**Rationale:** Under-listing is the milder half of catalog drift — `fields` is optional on `treasury_query_dataset`, so an omitted name costs discoverability rather than a failed call — but it is what sends a caller to `invalid_field` guessing at a name the endpoint has. Mirroring also keeps the verifier's informational output meaningful: with the full set listed, a new upstream column surfaces as the one unlisted-field finding in the report instead of vanishing into standing noise from every entry at once. The two exceptions earn it — 114 fields would dominate a `treasury_list_datasets` response that has sixteen other entries to carry.
