@@ -3,7 +3,7 @@
  * @module tests/tools/get-interest-rates.tool.test
  */
 
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { FiscalDataEnvelope } from '@/services/fiscal-data/types.js';
 
@@ -118,6 +118,60 @@ describe('getInterestRatesTool', () => {
     const result = await getInterestRatesTool.handler(input, ctx);
     expect(result.rates).toHaveLength(0);
     expect(result.total_records).toBe(0);
+  });
+
+  describe('empty-result guidance', () => {
+    function useEmpty() {
+      vi.mocked(getFiscalDataService).mockReturnValue({
+        fetchPage: vi.fn().mockResolvedValue(makeRatesEnvelope([])),
+      } as unknown as ReturnType<typeof getFiscalDataService>);
+    }
+
+    it('names the date range as a suspect when a valid security type finds nothing', async () => {
+      useEmpty();
+      const ctx = createMockContext();
+
+      await getInterestRatesTool.handler(
+        getInterestRatesTool.input.parse({
+          mode: 'series',
+          security_type: 'Treasury Bills',
+          start_date: '2099-01-01',
+          end_date: '2099-12-31',
+        }),
+        ctx,
+      );
+
+      const notice = String(getEnrichment(ctx).notice);
+      expect(notice).toContain('Treasury Bills');
+      expect(notice).toContain('start_date');
+    });
+
+    it('does not blame a date range in latest mode, where none was sent', async () => {
+      useEmpty();
+      const ctx = createMockContext();
+
+      await getInterestRatesTool.handler(getInterestRatesTool.input.parse({ mode: 'latest' }), ctx);
+
+      const notice = String(getEnrichment(ctx).notice);
+      expect(notice).not.toContain('date range');
+      expect(notice).not.toContain('start_date');
+    });
+
+    it('points at the range when a series matched nothing and no type was filtered', async () => {
+      useEmpty();
+      const ctx = createMockContext();
+
+      await getInterestRatesTool.handler(
+        getInterestRatesTool.input.parse({
+          mode: 'series',
+          start_date: '2099-01-01',
+          end_date: '2099-12-31',
+        }),
+        ctx,
+      );
+
+      expect(String(getEnrichment(ctx).notice)).toContain('start_date');
+    });
   });
 
   it('maps security_type_desc to security_type in output', async () => {

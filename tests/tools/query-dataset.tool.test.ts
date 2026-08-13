@@ -3,6 +3,7 @@
  * @module tests/tools/query-dataset.tool.test
  */
 
+import { serviceUnavailable, validationError } from '@cyanheads/mcp-ts-core/errors';
 import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { FiscalDataEnvelope } from '@/services/fiscal-data/types.js';
@@ -38,6 +39,13 @@ function makeEnvelope(
   };
 }
 
+function rejectWith(error: unknown) {
+  vi.mocked(getFiscalDataService).mockReturnValue({
+    fetchPage: vi.fn().mockRejectedValue(error),
+    buildFilterParam: vi.fn().mockReturnValue(''),
+  } as unknown as ReturnType<typeof getFiscalDataService>);
+}
+
 describe('queryDatasetTool', () => {
   beforeEach(() => {
     vi.mocked(getFiscalDataService).mockReturnValue({
@@ -51,7 +59,7 @@ describe('queryDatasetTool', () => {
   });
 
   it('returns rows and metadata for valid input', async () => {
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: queryDatasetTool.errors });
     const input = queryDatasetTool.input.parse({
       endpoint: '/v2/accounting/od/debt_to_penny',
     });
@@ -65,7 +73,7 @@ describe('queryDatasetTool', () => {
   });
 
   it('applies defaults for page_size and page_number', async () => {
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: queryDatasetTool.errors });
     const input = queryDatasetTool.input.parse({
       endpoint: '/v2/accounting/od/debt_to_penny',
     });
@@ -80,7 +88,7 @@ describe('queryDatasetTool', () => {
       buildFilterParam: vi.fn().mockReturnValue(''),
     } as unknown as ReturnType<typeof getFiscalDataService>);
 
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: queryDatasetTool.errors });
     const input = queryDatasetTool.input.parse({
       endpoint: '/v2/accounting/od/debt_to_penny',
       filters: [{ field: 'record_date', operator: 'eq', value: '2026-01-01' }],
@@ -97,7 +105,7 @@ describe('queryDatasetTool', () => {
       buildFilterParam: vi.fn().mockReturnValue('record_date:eq:2026-05-01'),
     } as unknown as ReturnType<typeof getFiscalDataService>);
 
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: queryDatasetTool.errors });
     const input = queryDatasetTool.input.parse({
       endpoint: '/v2/accounting/od/debt_to_penny',
       filters: [{ field: 'record_date', operator: 'eq', value: '2026-05-01' }],
@@ -107,16 +115,12 @@ describe('queryDatasetTool', () => {
   });
 
   it('throws invalid_endpoint when service throws (404 HTML)', async () => {
-    const { validationError } = await import('@cyanheads/mcp-ts-core/errors');
-    vi.mocked(getFiscalDataService).mockReturnValue({
-      fetchPage: vi.fn().mockRejectedValue(
-        validationError('Endpoint does not exist.', {
-          reason: 'invalid_endpoint',
-          endpoint: '/bad',
-        }),
-      ),
-      buildFilterParam: vi.fn(),
-    } as unknown as ReturnType<typeof getFiscalDataService>);
+    rejectWith(
+      validationError('Endpoint does not exist.', {
+        reason: 'invalid_endpoint',
+        endpoint: '/bad',
+      }),
+    );
 
     const ctx = createMockContext({ errors: queryDatasetTool.errors });
     const input = queryDatasetTool.input.parse({ endpoint: '/v1/bad/endpoint' });
@@ -126,15 +130,11 @@ describe('queryDatasetTool', () => {
   });
 
   it('throws invalid_field when service throws (bad field name)', async () => {
-    const { validationError } = await import('@cyanheads/mcp-ts-core/errors');
-    vi.mocked(getFiscalDataService).mockReturnValue({
-      fetchPage: vi.fn().mockRejectedValue(
-        validationError("Invalid field: Field 'bogus_field' does not exist.", {
-          reason: 'invalid_field',
-        }),
-      ),
-      buildFilterParam: vi.fn().mockReturnValue(''),
-    } as unknown as ReturnType<typeof getFiscalDataService>);
+    rejectWith(
+      validationError("Invalid field: Field 'bogus_field' does not exist.", {
+        reason: 'invalid_field',
+      }),
+    );
 
     const ctx = createMockContext({ errors: queryDatasetTool.errors });
     const input = queryDatasetTool.input.parse({
@@ -147,15 +147,11 @@ describe('queryDatasetTool', () => {
   });
 
   it('throws invalid_filter when service throws (unsupported operator)', async () => {
-    const { validationError } = await import('@cyanheads/mcp-ts-core/errors');
-    vi.mocked(getFiscalDataService).mockReturnValue({
-      fetchPage: vi.fn().mockRejectedValue(
-        validationError("Invalid filter operator: Operator ':like:' is not supported.", {
-          reason: 'invalid_filter',
-        }),
-      ),
-      buildFilterParam: vi.fn().mockReturnValue(''),
-    } as unknown as ReturnType<typeof getFiscalDataService>);
+    rejectWith(
+      validationError("Invalid filter operator: Operator ':like:' is not supported.", {
+        reason: 'invalid_filter',
+      }),
+    );
 
     const ctx = createMockContext({ errors: queryDatasetTool.errors });
     const input = queryDatasetTool.input.parse({
@@ -163,6 +159,85 @@ describe('queryDatasetTool', () => {
     });
     await expect(queryDatasetTool.handler(input, ctx)).rejects.toMatchObject({
       data: { reason: 'invalid_filter' },
+    });
+  });
+
+  describe('rerouted service errors', () => {
+    /** The declared hint for a reason — the contract is the source of truth. */
+    function declaredRecovery(reason: string): string | undefined {
+      return queryDatasetTool.errors?.find((entry) => entry.reason === reason)?.recovery;
+    }
+
+    it.each([
+      ['invalid_endpoint', 'Endpoint does not exist.'],
+      ['invalid_field', "Invalid field: Field 'nope' does not exist."],
+      ['invalid_filter', "Invalid filter operator: Operator ':like:' is not supported."],
+      ['page_out_of_range', 'Page out of range: Page #9999 is out of range.'],
+    ])('carries the declared recovery hint for %s', async (reason, message) => {
+      rejectWith(validationError(message, { reason }));
+
+      const ctx = createMockContext({ errors: queryDatasetTool.errors });
+      const input = queryDatasetTool.input.parse({
+        endpoint: '/v2/accounting/od/debt_to_penny',
+      });
+      await expect(queryDatasetTool.handler(input, ctx)).rejects.toMatchObject({
+        message,
+        data: {
+          reason,
+          endpoint: '/v2/accounting/od/debt_to_penny',
+          recovery: { hint: declaredRecovery(reason) },
+        },
+      });
+    });
+
+    it('chains the originating service error as the cause', async () => {
+      const original = validationError('Endpoint does not exist.', { reason: 'invalid_endpoint' });
+      rejectWith(original);
+
+      const ctx = createMockContext({ errors: queryDatasetTool.errors });
+      const input = queryDatasetTool.input.parse({ endpoint: '/v1/bad/endpoint' });
+      let caught: unknown;
+      try {
+        await queryDatasetTool.handler(input, ctx);
+      } catch (err) {
+        caught = err;
+      }
+      expect((caught as Error | undefined)?.cause).toBe(original);
+    });
+
+    it('sends an out-of-range page back to total_pages, which this tool returns', async () => {
+      rejectWith(
+        validationError('Page out of range: Page #9999 is out of range.', {
+          reason: 'page_out_of_range',
+        }),
+      );
+
+      const ctx = createMockContext({ errors: queryDatasetTool.errors });
+      const input = queryDatasetTool.input.parse({
+        endpoint: '/v2/accounting/od/debt_to_penny',
+        page_number: 9999,
+      });
+      const error = (await Promise.resolve(queryDatasetTool.handler(input, ctx)).catch(
+        (err: unknown) => err,
+      )) as {
+        data: { recovery?: { hint?: string } };
+      };
+
+      expect(String(error.data.recovery?.hint)).toContain('total_pages');
+      expect(Object.keys(queryDatasetTool.output.shape)).toContain('total_pages');
+    });
+
+    it('lets an unmapped service error bubble unchanged', async () => {
+      const original = serviceUnavailable('Fiscal Data API error: upstream exploded.', {
+        status: 503,
+      });
+      rejectWith(original);
+
+      const ctx = createMockContext({ errors: queryDatasetTool.errors });
+      const input = queryDatasetTool.input.parse({
+        endpoint: '/v2/accounting/od/debt_to_penny',
+      });
+      await expect(queryDatasetTool.handler(input, ctx)).rejects.toBe(original);
     });
   });
 

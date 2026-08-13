@@ -53,6 +53,13 @@ export const queryDatasetTool = tool('treasury_query_dataset', {
       recovery:
         'Supported operators: eq, gt, gte, lt, lte, in. Dates use YYYY-MM-DD. Check field names against treasury_list_datasets.',
     },
+    {
+      reason: 'page_out_of_range',
+      code: JsonRpcErrorCode.ValidationError,
+      when: 'page_number is past the last page of the matched set — API returns JSON {"error":"Invalid Query Param","message":"...Page #N is out of range..."}',
+      recovery:
+        'Request a page_number within total_pages, which this tool returns on every successful response.',
+    },
   ],
 
   input: z.object({
@@ -180,19 +187,27 @@ export const queryDatasetTool = tool('treasury_query_dataset', {
     try {
       envelope = await svc.fetchPage(ctx, input.endpoint, fetchOpts);
     } catch (err) {
-      // Re-route service-layer classification errors through ctx.fail so
-      // data.reason is typed against the declared contract and the JSON-RPC
-      // error code matches what the contract advertises.
+      /**
+       * Re-route service-layer classification errors through ctx.fail so
+       * data.reason is typed against the declared contract and the JSON-RPC
+       * error code matches what the contract advertises. ctx.fail builds the
+       * wire error from exactly the data argument given, so the contract's
+       * recovery hint and the endpoint that failed are forwarded explicitly —
+       * nothing carries over from the caught error on its own.
+       */
       if (!(err instanceof McpError)) throw err;
       const reason = err.data?.reason;
       if (
         reason === 'invalid_endpoint' ||
         reason === 'invalid_field' ||
-        reason === 'invalid_filter'
+        reason === 'invalid_filter' ||
+        reason === 'page_out_of_range'
       ) {
         throw ctx.fail(
-          reason as 'invalid_endpoint' | 'invalid_field' | 'invalid_filter',
+          reason,
           err.message,
+          { endpoint: input.endpoint, ...ctx.recoveryFor(reason) },
+          { cause: err },
         );
       }
       throw err;

@@ -124,10 +124,21 @@ export const getInterestRatesTool = tool('treasury_get_interest_rates', {
     const totalRecords = envelope.meta['total-count'];
 
     if (totalRecords === 0) {
+      /**
+       * Name every constraint the query actually carried. A date range is only
+       * sent in series mode, and a filtered security type is not the suspect
+       * when a range is also in play — blaming either one alone sends the caller
+       * to check something that was never the problem.
+       */
+      const inRange = input.mode === 'series' ? ' in that date range' : '';
+      const rangeHint =
+        input.mode === 'series'
+          ? ' Records are end-of-month — widen start_date/end_date to cover a month end.'
+          : '';
       ctx.enrich.notice(
         input.security_type
-          ? `No records found for security_type="${input.security_type}". Valid values: ${SECURITY_DESCS.join(', ')}.`
-          : 'No interest rate records found for the specified date range.',
+          ? `No records found for security_type="${input.security_type}"${inRange}. Valid values: ${SECURITY_DESCS.join(', ')}.${rangeHint}`
+          : `No interest rate records found${inRange}.${rangeHint}`,
       );
       return {
         as_of_date: '',

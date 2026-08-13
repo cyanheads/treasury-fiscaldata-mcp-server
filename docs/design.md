@@ -195,6 +195,12 @@ errors: [
     when: 'The filter expression uses an unsupported operator — API returns JSON {"error":"Invalid Query Param","message":"...Operator \':{op}:\' is not supported..."} (not HTML)',
     recovery: 'Supported operators: eq, gt, gte, lt, lte, in. Dates use YYYY-MM-DD. Check field names against treasury_list_datasets.',
   },
+  {
+    reason: 'page_out_of_range',
+    code: JsonRpcErrorCode.ValidationError,
+    when: 'page_number is past the last page of the matched set — API returns JSON {"error":"Invalid Query Param","message":"...Page #N is out of range..."}',
+    recovery: 'Request a page_number within total_pages, which this tool returns on every successful response.',
+  },
 ]
 ```
 
@@ -451,11 +457,13 @@ z.object({
   register_as: z.string().optional()
     .describe('Persist result as a new dataframe. Use to chain analyses.'),
   preview: z.number().int().min(0).max(10000).optional()
-    .describe('Rows in the immediate response. Defaults to row_limit. Set lower when using register_as.'),
+    .describe('Rows in the immediate response. Defaults to row_limit and may not exceed it. Set lower when using register_as.'),
   row_limit: z.number().int().min(1).max(10000).default(1000)
     .describe('Hard cap on rows in the response. Default 1000, max 10000.'),
 })
 ```
+
+`preview` may never exceed `row_limit` — the canvas rejects that pair outright. So whenever `preview` is supplied it is the binding cap, and truncation guidance must name it rather than `row_limit`; at equality both have to move together.
 
 **Output schema:**
 ```ts
@@ -472,7 +480,13 @@ z.object({
 ```ts
 enrichment: {
   notice: z.string().optional()
-    .describe('Guidance when the query returned no rows, or when results were capped by row_limit.'),
+    .describe('Guidance when the query returned no rows, or when results were capped by preview or row_limit.'),
+  truncated: z.boolean().optional()
+    .describe('True when the returned rows were capped below the full result set.'),
+  shown: z.number().optional()
+    .describe('Number of rows returned in this response.'),
+  cap: z.number().optional()
+    .describe('The row cap that was applied — preview when supplied, otherwise row_limit.'),
 }
 ```
 
@@ -497,8 +511,22 @@ errors: [
     when: 'SQL is not a SELECT, contains DDL/DML, or uses disallowed table functions',
     recovery: 'Only SELECT statements are permitted. Reference dataframes by name from treasury_dataframe_describe.',
   },
+  {
+    reason: 'missing_table',
+    code: JsonRpcErrorCode.NotFound,
+    when: 'A df_<id> table named in the SQL is not on the canvas — its TTL expired, it was dropped, or it was never registered',
+    recovery: 'Call treasury_dataframe_describe to list live tables, or re-stage the rows by passing canvas_id to treasury_query_dataset, treasury_get_debt, treasury_get_interest_rates, or treasury_get_exchange_rates.',
+  },
+  {
+    reason: 'invalid_query_bounds',
+    code: JsonRpcErrorCode.ValidationError,
+    when: 'preview exceeds row_limit, or row_limit exceeds the row ceiling this server allows',
+    recovery: 'Keep preview at or below row_limit, and keep row_limit within the ceiling this server allows.',
+  },
 ]
 ```
+
+`missing_table` and `invalid_query_bounds` originate in the framework canvas layer, whose own messages and hints name in-process methods (`registerTable()`, `describe()`) and framework field names (`rowLimit`). The handler reroutes both through `ctx.fail`, replacing message and hint with this server's tool and parameter names — an MCP client can reach those, and cannot reach the framework's.
 
 > **Implementation note (mirrors secedgar gold standard):** Use `ctx.enrich.notice(...)` in the handler for empty-result and row-cap conditions — not `format()` text — so the notice reaches both `structuredContent` (Claude Code) and `content[]` (Claude Desktop) automatically. Check `result.rowCount === 0` and `result.rowCount > result.rows.length` after executing. The `register_as` value must match `df_XXXXX_XXXXX` format or be a fresh agent-supplied df_<id>.
 
@@ -560,8 +588,10 @@ GET {base}/{endpoint}
 
 **Error shapes (verified live):**
 - **404 (invalid endpoint path):** Returns HTML (not JSON). Service layer must detect `Content-Type: text/html` and convert to `invalid_endpoint` error.
-- **400 (bad field or operator):** Returns JSON `{"error":"Invalid Query Param","message":"..."}` — parse as a structured validation error, not an HTML page.
+- **400 (bad field, operator, or out-of-range page):** Returns JSON `{"error":"Invalid Query Param","message":"..."}` — parse as a structured validation error, not an HTML page. Three message patterns are recognized: `Field 'X' does not exist` → `invalid_field`, `Operator ':op:' is not supported` → `invalid_filter`, `Page #N is out of range` → `page_out_of_range`.
 - **Empty results (date/country not found):** Returns `200 OK` with `{"data":[],"meta":{"total-count":0,...}}`. NOT a 4xx. Service layer must check `meta["total-count"] === 0` to surface domain-level not-found conditions.
+
+**Retry classification.** The status class decides retryability; the message patterns above only pick a more specific reason. A 4xx carries the framework's `httpStatusToErrorCode` mapping, which `withRetry` treats as terminal — except 408/425/429, where waiting is the remedy. Everything else stays `ServiceUnavailable` and keeps its retry budget. Message matching must never be what decides whether to retry: a fourth 400 message pattern nobody has seen yet still fails fast.
 
 **Null values:** Returned as the string `"null"`. All value conversion must be defensive (`val === "null" ? null : val`).
 
@@ -674,3 +704,15 @@ One API call for most series queries (FY2026 has ~164 business days; a 5-year se
 **Decision:** `treasury_query_dataset` does a soft catalog check (warn in enrichment if endpoint not found in catalog) but does not hard-block on unrecognized endpoints.
 
 **Rationale:** The catalog might be stale if Treasury adds new endpoints before a server update. Hard-blocking would break access to new endpoints. Instead: validate against the catalog for known typos, surface a warning notice, but let the request through. The API will return its own 404 HTML if the endpoint is genuinely invalid — the service layer converts that to an `invalid_endpoint` error.
+
+### 10. Retryability keys on the HTTP status class, never on the error message
+
+**Decision:** `FiscalDataService.fetchPage` derives the thrown error's code from the response status (`httpStatusToErrorCode` for 4xx, `ServiceUnavailable` otherwise) and lets `withRetry`'s code-based predicate follow from it. Message pattern matching only selects a more specific `reason`.
+
+**Rationale:** The 400 message patterns are an open set — Fiscal Data returns one for bad fields, one for bad operators, one for out-of-range pages, and there is no published list. When retryability was decided by which patterns matched, every unmatched 400 defaulted to `ServiceUnavailable` and burned the full retry budget on a rejection the API would never reverse; the caller waited seconds for a verdict available on the first response and then read `(failed after 4 attempts)`, which reads like an upstream flake. Keying on the status class means an unrecognized 400 fails fast on its own, so adding a fourth message pattern is a reason refinement rather than a retry fix.
+
+### 11. Recovery hints name only what the caller can reach
+
+**Decision:** Every declared `recovery` hint and every `ctx.enrich` guidance string names an MCP tool on this server or an input parameter of the tool that was just called. Errors originating in the framework are rerouted through `ctx.fail` with both message and hint rewritten; guidance that varies by request state branches on what the caller actually sent.
+
+**Rationale:** A hint the caller cannot act on is worse than none — it costs a round trip and reads as authoritative. Three shapes recur: a framework hint naming in-process methods (`registerTable()`, `describe()`) that no MCP client can call; a hint naming the remedy the caller already applied (advising `canvas_id` to someone who passed `canvas_id`, or explaining business days to someone who omitted `date` entirely); and a hint naming the wrong lever (advising `row_limit` when `preview` is the smaller, binding cap). Each is caught by asking one question of the string: from the caller's seat, is the thing it names reachable, and is it the thing that actually bound?
