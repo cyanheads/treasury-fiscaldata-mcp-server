@@ -122,7 +122,16 @@ export const dataframeDescribeTool = tool('treasury_dataframe_describe', {
       lines.push(`- Source: ${df.source_tool}`);
       lines.push(`- Rows: ${df.row_count}${truncated}`);
       lines.push(`- Created: ${df.created_at} — Expires: ${df.expires_at}`);
+      /**
+       * The source tools pass their whole input through, so an optional
+       * parameter the caller never supplied arrives here as an undefined value.
+       * `JSON.stringify(undefined)` is undefined, which interpolates to the
+       * literal text `undefined` and reads as a filter the dataframe was built
+       * with. An unset parameter has nothing to report, so it is left out; an
+       * explicit null is a value and stays.
+       */
       const params = Object.entries(df.query_params)
+        .filter(([, v]) => v !== undefined)
         .map(([k, v]) => `${k}=${JSON.stringify(v)}`)
         .join(', ');
       if (params) lines.push(`- Params: ${params}`);

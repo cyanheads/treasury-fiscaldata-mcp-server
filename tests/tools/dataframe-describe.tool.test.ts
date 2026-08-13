@@ -125,6 +125,82 @@ describe('dataframeDescribeTool', () => {
     expect(text).toContain('100');
   });
 
+  it('omits query params the source tool was never given', () => {
+    /**
+     * The source tools hand their whole input through as query params, so an
+     * optional one that was never supplied arrives as an undefined value.
+     * Rendering it prints `security_type=undefined`, which reads as a filter the
+     * dataframe was built with.
+     */
+    const result = {
+      dataframes: [
+        {
+          name: 'df_ABCDE_FGHIJ',
+          source_tool: 'treasury_get_interest_rates',
+          query_params: {
+            mode: 'series',
+            security_type: undefined,
+            start_date: '2026-01-01',
+            end_date: undefined,
+          },
+          created_at: '2026-05-28T10:00:00.000Z',
+          expires_at: '2026-05-29T10:00:00.000Z',
+          row_count: 100,
+          truncated: false,
+          max_rows: undefined,
+          column_schema: [{ name: 'record_date', type: 'VARCHAR', nullable: true }],
+        },
+      ],
+    };
+    const text = (dataframeDescribeTool.format!(result)[0] as { text: string }).text;
+
+    expect(text).not.toContain('undefined');
+    expect(text).toContain('mode="series"');
+    expect(text).toContain('start_date="2026-01-01"');
+  });
+
+  it('keeps a param whose value is genuinely null', () => {
+    const result = {
+      dataframes: [
+        {
+          name: 'df_ABCDE_FGHIJ',
+          source_tool: 'treasury_query_dataset',
+          query_params: { sort: null },
+          created_at: '2026-05-28T10:00:00.000Z',
+          expires_at: '2026-05-29T10:00:00.000Z',
+          row_count: 1,
+          truncated: false,
+          max_rows: undefined,
+          column_schema: [{ name: 'record_date', type: 'VARCHAR', nullable: true }],
+        },
+      ],
+    };
+    const text = (dataframeDescribeTool.format!(result)[0] as { text: string }).text;
+
+    expect(text).toContain('sort=null');
+  });
+
+  it('drops the params line entirely when every param is unset', () => {
+    const result = {
+      dataframes: [
+        {
+          name: 'df_ABCDE_FGHIJ',
+          source_tool: 'treasury_get_debt',
+          query_params: { start_date: undefined, end_date: undefined },
+          created_at: '2026-05-28T10:00:00.000Z',
+          expires_at: '2026-05-29T10:00:00.000Z',
+          row_count: 1,
+          truncated: false,
+          max_rows: undefined,
+          column_schema: [{ name: 'record_date', type: 'VARCHAR', nullable: true }],
+        },
+      ],
+    };
+    const text = (dataframeDescribeTool.format!(result)[0] as { text: string }).text;
+
+    expect(text).not.toContain('- Params:');
+  });
+
   it('formats empty state', () => {
     const result = { dataframes: [] };
     const blocks = dataframeDescribeTool.format!(result);
