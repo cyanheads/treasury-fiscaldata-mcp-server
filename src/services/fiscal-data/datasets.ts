@@ -14,7 +14,7 @@ export const DATASETS: DatasetEntry[] = [
     endpoint: '/v2/accounting/od/debt_to_penny',
     name: 'Debt to the Penny',
     description:
-      'Daily national debt outstanding broken into publicly-held debt and intragovernmental holdings. Records go back to 1993-01-04. Only recorded on business days.',
+      'Daily national debt outstanding broken into publicly-held debt and intragovernmental holdings. Records go back to 1993-04-01. Only recorded on business days.',
     category: 'debt',
     update_cadence: 'Daily (business days)',
     fields: [
@@ -94,7 +94,7 @@ export const DATASETS: DatasetEntry[] = [
     endpoint: '/v1/accounting/od/rates_of_exchange',
     name: 'Treasury Reporting Rates of Exchange',
     description:
-      'Official Treasury statutory exchange rates — foreign currency units per 1 USD — for ~130 countries. Published quarterly (March 31, June 30, Sep 30, Dec 31). Required for federal agencies converting foreign-currency amounts to USD for official reporting. Not market rates.',
+      'Official Treasury statutory exchange rates — foreign currency units per 1 USD — for ~165 countries. Published quarterly (March 31, June 30, Sep 30, Dec 31); a quarter is amended by reissuing a rate under the same record_date with a later effective_date. Required for federal agencies converting foreign-currency amounts to USD for official reporting. Not market rates.',
     category: 'exchange_rates',
     update_cadence: 'Quarterly',
     fields: [
