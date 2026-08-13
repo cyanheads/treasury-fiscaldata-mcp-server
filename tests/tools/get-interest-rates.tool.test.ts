@@ -21,6 +21,7 @@ vi.mock('@/services/canvas-bridge/canvas-bridge.js', async (importOriginal) => {
 });
 
 import { getInterestRatesTool } from '@/mcp-server/tools/definitions/get-interest-rates.tool.js';
+import { getCanvasBridge } from '@/services/canvas-bridge/canvas-bridge.js';
 import { getFiscalDataService } from '@/services/fiscal-data/fiscal-data-service.js';
 
 type RateRow = {
@@ -66,8 +67,31 @@ const SAMPLE_ROWS: RateRow[] = [
   },
 ];
 
+/** Install a canvas bridge whose registration succeeds under `tableName`. */
+function useBridge(tableName: string, rowCount: number) {
+  const registerDataframe = vi.fn().mockResolvedValue({
+    tableName,
+    rowCount,
+    expiresAt: '2026-06-02T00:00:00.000Z',
+    columnSchema: [],
+  });
+  vi.mocked(getCanvasBridge).mockReturnValue({ registerDataframe } as unknown as ReturnType<
+    typeof getCanvasBridge
+  >);
+  return registerDataframe;
+}
+
+/** A series envelope whose upstream match exceeds the 200-row auto-spill threshold. */
+function makeSeriesEnvelope(rows: RateRow[], totalCount: number): FiscalDataEnvelope {
+  return {
+    ...makeRatesEnvelope(rows),
+    meta: { ...makeRatesEnvelope(rows).meta, 'total-count': totalCount },
+  };
+}
+
 describe('getInterestRatesTool', () => {
   beforeEach(() => {
+    vi.mocked(getCanvasBridge).mockReset().mockReturnValue(undefined);
     vi.mocked(getFiscalDataService).mockReturnValue({
       fetchPage: vi.fn().mockResolvedValue(makeRatesEnvelope(SAMPLE_ROWS)),
     } as unknown as ReturnType<typeof getFiscalDataService>);
@@ -236,6 +260,210 @@ describe('getInterestRatesTool', () => {
     // Must reflect actual rows returned, not the 4945 API total
     expect(result.total_records).toBe(SAMPLE_ROWS.length);
     expect(result.total_records).not.toBe(4945);
+  });
+
+  describe('canvas staging disclosure', () => {
+    function useBigSeries(totalCount = 250) {
+      vi.mocked(getFiscalDataService).mockReturnValue({
+        fetchPage: vi.fn().mockResolvedValue(makeSeriesEnvelope(SAMPLE_ROWS, totalCount)),
+      } as unknown as ReturnType<typeof getFiscalDataService>);
+    }
+
+    function seriesInput(extra: Record<string, unknown> = {}) {
+      return getInterestRatesTool.input.parse({
+        mode: 'series',
+        start_date: '2026-01-31',
+        end_date: '2026-04-30',
+        ...extra,
+      });
+    }
+
+    it('names the staged table and both dataframe tools', async () => {
+      useBigSeries();
+      useBridge('df_RATES_00001', 3);
+      const ctx = createMockContext();
+
+      const result = await getInterestRatesTool.handler(seriesInput(), ctx);
+
+      expect(result.canvas_id).toBe('df_RATES_00001');
+      const notice = String(getEnrichment(ctx).notice);
+      expect(notice).toContain('df_RATES_00001');
+      expect(notice).toContain('treasury_dataframe_describe');
+      expect(notice).toContain('treasury_dataframe_query');
+      expect(notice.indexOf('treasury_dataframe_describe')).toBeLessThan(
+        notice.indexOf('treasury_dataframe_query'),
+      );
+    });
+
+    it('discloses staging requested by canvas_id below the auto-spill threshold', async () => {
+      useBigSeries(3);
+      useBridge('df_RATES_00002', 3);
+      const ctx = createMockContext();
+
+      const result = await getInterestRatesTool.handler(
+        seriesInput({ canvas_id: 'stage-it' }),
+        ctx,
+      );
+
+      expect(result.canvas_id).toBe('df_RATES_00002');
+      expect(String(getEnrichment(ctx).notice)).toContain('df_RATES_00002');
+    });
+
+    it('explains the absent canvas_id when staging was triggered but unavailable', async () => {
+      useBigSeries();
+      const ctx = createMockContext();
+
+      const result = await getInterestRatesTool.handler(seriesInput(), ctx);
+
+      expect(result.canvas_id).toBeUndefined();
+      const notice = String(getEnrichment(ctx).notice);
+      expect(notice).toContain('could not be staged');
+      expect(notice).toContain('CANVAS_PROVIDER_TYPE=duckdb');
+    });
+
+    it('stays silent when staging was never in play', async () => {
+      useBigSeries(3);
+      const ctx = createMockContext();
+
+      const result = await getInterestRatesTool.handler(seriesInput(), ctx);
+
+      expect(result.canvas_id).toBeUndefined();
+      expect(getEnrichment(ctx)).not.toHaveProperty('notice');
+    });
+
+    it('leaves the empty-result guidance as the only notice', async () => {
+      vi.mocked(getFiscalDataService).mockReturnValue({
+        fetchPage: vi.fn().mockResolvedValue(makeRatesEnvelope([])),
+      } as unknown as ReturnType<typeof getFiscalDataService>);
+      useBridge('df_RATES_00003', 0);
+      const ctx = createMockContext();
+
+      await getInterestRatesTool.handler(seriesInput({ canvas_id: 'stage-it' }), ctx);
+
+      const notice = String(getEnrichment(ctx).notice);
+      expect(notice).toContain('No interest rate records found');
+      expect(notice).not.toContain('df_RATES_00003');
+    });
+  });
+
+  describe('inline series cap', () => {
+    /** A month of rows per record_date, newest first, spanning `months` months. */
+    function monthlyRows(months: number): RateRow[] {
+      return Array.from({ length: months }, (_, m) =>
+        SECURITY_SAMPLE.map((desc) => ({
+          record_date: `2026-${String(12 - (m % 12)).padStart(2, '0')}-28`,
+          security_type_desc: 'Marketable',
+          security_desc: desc,
+          avg_interest_rate_amt: '3.500',
+        })),
+      ).flat();
+    }
+
+    const SECURITY_SAMPLE = ['Treasury Bills', 'Treasury Notes', 'Treasury Bonds'];
+
+    function useSeries(rows: RateRow[], totalCount = rows.length) {
+      vi.mocked(getFiscalDataService).mockReturnValue({
+        fetchPage: vi.fn().mockResolvedValue(makeSeriesEnvelope(rows, totalCount)),
+      } as unknown as ReturnType<typeof getFiscalDataService>);
+    }
+
+    function seriesInput(extra: Record<string, unknown> = {}) {
+      return getInterestRatesTool.input.parse({
+        mode: 'series',
+        start_date: '2001-01-31',
+        end_date: '2026-07-31',
+        ...extra,
+      });
+    }
+
+    it('caps the inline series when no canvas is configured', async () => {
+      /**
+       * The default install: CANVAS_PROVIDER_TYPE unset, so nothing absorbs the
+       * remainder and every fetched row used to come back inline.
+       */
+      useSeries(monthlyRows(40), 4993);
+      const ctx = createMockContext();
+
+      const result = await getInterestRatesTool.handler(seriesInput(), ctx);
+
+      expect(result.canvas_id).toBeUndefined();
+      expect(result.rates).toHaveLength(20);
+      expect(getEnrichment(ctx)).toMatchObject({ truncated: true, shown: 20, cap: 20 });
+    });
+
+    it('names the missing canvas rather than telling the caller to pass canvas_id', async () => {
+      useSeries(monthlyRows(40), 4993);
+      const ctx = createMockContext();
+
+      await getInterestRatesTool.handler(seriesInput({ canvas_id: 'stage-it' }), ctx);
+
+      const notice = String(getEnrichment(ctx).notice);
+      expect(notice).toContain('CANVAS_PROVIDER_TYPE=duckdb');
+      expect(notice).toContain('120 retrieved rows');
+      expect(notice).not.toContain('Pass canvas_id');
+    });
+
+    it('offers canvas_id when staging was never attempted', async () => {
+      useSeries(monthlyRows(40), 120);
+      const ctx = createMockContext();
+
+      await getInterestRatesTool.handler(seriesInput(), ctx);
+
+      const notice = String(getEnrichment(ctx).notice);
+      expect(notice).toContain('Pass canvas_id');
+      expect(notice).not.toContain('could not be staged');
+    });
+
+    it('caps and names the table when a canvas did absorb the rest', async () => {
+      useSeries(monthlyRows(40), 4993);
+      useBridge('df_RATES_CAPPD', 120);
+      const ctx = createMockContext();
+
+      const result = await getInterestRatesTool.handler(seriesInput(), ctx);
+
+      expect(result.rates).toHaveLength(20);
+      const notice = String(getEnrichment(ctx).notice);
+      expect(notice).toContain('df_RATES_CAPPD');
+      expect(notice).toContain('Showing 20 of 120');
+    });
+
+    it('leaves latest mode whole — a month is a bounded set', async () => {
+      const oneMonth: RateRow[] = Array.from({ length: 17 }, (_, i) => ({
+        record_date: '2026-07-31',
+        security_type_desc: 'Marketable',
+        security_desc: `Security ${i}`,
+        avg_interest_rate_amt: '3.500',
+      }));
+      useSeries(oneMonth, 4993);
+      const ctx = createMockContext();
+
+      const result = await getInterestRatesTool.handler(
+        getInterestRatesTool.input.parse({ mode: 'latest' }),
+        ctx,
+      );
+
+      expect(result.rates).toHaveLength(17);
+      expect(getEnrichment(ctx)).not.toHaveProperty('truncated');
+    });
+
+    it('reports the cap in the text block without a canvas to point at', () => {
+      const text = (
+        getInterestRatesTool.format!({
+          as_of_date: '2026-07-31',
+          rates: [
+            {
+              record_date: '2026-07-31',
+              security_type: 'Marketable',
+              security_desc: 'Treasury Bills',
+              avg_interest_rate_pct: '3.696',
+            },
+          ],
+          total_records: 4993,
+        })[0] as { text: string }
+      ).text;
+
+      expect(text).toContain('showing 1 of 4993');
+    });
   });
 
   it('series with canvas returns at most 20 rows inline when canvas is registered', async () => {
