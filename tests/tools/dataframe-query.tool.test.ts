@@ -15,11 +15,16 @@ vi.mock('@/services/canvas-bridge/canvas-bridge.js', () => ({
 import { dataframeQueryTool } from '@/mcp-server/tools/definitions/dataframe-query.tool.js';
 import { getCanvasBridge } from '@/services/canvas-bridge/canvas-bridge.js';
 
-/** A bridge query result. `rowCount` above `rows.length` is a capped result. */
+/**
+ * A bridge query result. `rowCount` above `rows.length` is a preview-capped
+ * result; `truncated` is what the canvas sets when `row_limit` bound the query
+ * itself, in which case `rowCount` equals that limit rather than the true total.
+ */
 function makeQueryResult(
   rows: Record<string, unknown>[],
   rowCount = rows.length,
   columns = ['record_date', 'debt'],
+  truncated?: boolean,
 ) {
   return {
     result: {
@@ -27,6 +32,7 @@ function makeQueryResult(
       rowCount,
       rows,
       tableName: undefined,
+      ...(truncated !== undefined && { truncated }),
     },
   };
 }
@@ -411,10 +417,150 @@ describe('dataframeQueryTool', () => {
     });
   });
 
+  describe('row_limit as the binding cap', () => {
+    /**
+     * The default call against an oversized dataframe: `row_limit` bounds the
+     * query, so the canvas returns exactly that many rows and reports the cap as
+     * `rowCount`. Nothing in the row arithmetic separates this from a table that
+     * holds exactly `row_limit` rows — only the canvas `truncated` flag does.
+     */
+    function useRowLimitBound(rowLimit = 1000, shown = rowLimit) {
+      resolveWith(
+        makeQueryResult(
+          Array.from({ length: shown }, (_, i) => ({ record_date: `row-${i}` })),
+          rowLimit,
+          ['record_date'],
+          true,
+        ),
+      );
+    }
+
+    it('marks the count as capped when row_limit bound the query', async () => {
+      useRowLimitBound(1000);
+      const ctx = createMockContext({ tenantId: 'test-tenant', errors: dataframeQueryTool.errors });
+
+      const result = await dataframeQueryTool.handler(
+        dataframeQueryTool.input.parse({ sql: 'SELECT * FROM df_ABCDE_FGHIJ' }),
+        ctx,
+      );
+
+      expect(result.row_count).toBe(1000);
+      expect(result.rows).toHaveLength(1000);
+      expect(result.row_count_capped).toBe(true);
+    });
+
+    it('discloses the cap and names row_limit and register_as as the levers', async () => {
+      useRowLimitBound(1000);
+      const ctx = createMockContext({ tenantId: 'test-tenant', errors: dataframeQueryTool.errors });
+
+      await dataframeQueryTool.handler(
+        dataframeQueryTool.input.parse({ sql: 'SELECT * FROM df_ABCDE_FGHIJ' }),
+        ctx,
+      );
+
+      expect(getEnrichment(ctx)).toMatchObject({ truncated: true, shown: 1000, cap: 1000 });
+      const notice = String(getEnrichment(ctx).notice);
+      expect(notice).toContain('row_limit');
+      expect(notice).toContain('register_as');
+    });
+
+    it('names preview as well when it also bound the inline rows', async () => {
+      useRowLimitBound(1000, 10);
+      const ctx = createMockContext({ tenantId: 'test-tenant', errors: dataframeQueryTool.errors });
+
+      await dataframeQueryTool.handler(
+        dataframeQueryTool.input.parse({
+          sql: 'SELECT * FROM df_ABCDE_FGHIJ',
+          preview: 10,
+          row_limit: 1000,
+        }),
+        ctx,
+      );
+
+      const notice = String(getEnrichment(ctx).notice);
+      expect(notice).toContain('matched more than row_limit');
+      expect(notice).toContain('raise preview (currently 10)');
+      expect(getEnrichment(ctx)).toMatchObject({ shown: 10, cap: 10 });
+    });
+
+    it('leaves an exact result alone at the same row count', async () => {
+      resolveWith(
+        makeQueryResult(
+          Array.from({ length: 1000 }, (_, i) => ({ record_date: `row-${i}` })),
+          1000,
+          ['record_date'],
+        ),
+      );
+      const ctx = createMockContext({ tenantId: 'test-tenant', errors: dataframeQueryTool.errors });
+
+      const result = await dataframeQueryTool.handler(
+        dataframeQueryTool.input.parse({ sql: 'SELECT * FROM df_ABCDE_FGHIJ' }),
+        ctx,
+      );
+
+      expect(result.row_count_capped).toBe(false);
+      expect(getEnrichment(ctx)).not.toHaveProperty('truncated');
+      expect(getEnrichment(ctx)).not.toHaveProperty('notice');
+    });
+
+    it('reports an exact count on the register_as path, which counts the table', async () => {
+      vi.mocked(getCanvasBridge).mockReturnValue({
+        query: vi.fn().mockResolvedValue({
+          result: {
+            columns: ['record_date'],
+            rowCount: 19_000,
+            rows: [{ record_date: '2026-06-30' }],
+            tableName: 'df_FULL0_RESLT',
+          },
+          meta: {
+            tableName: 'df_FULL0_RESLT',
+            sourceTool: 'treasury_dataframe_query',
+            queryParams: { sql: 'SELECT * FROM df_ABCDE_FGHIJ' },
+            createdAt: '2026-08-12T10:00:00.000Z',
+            expiresAt: '2026-08-13T10:00:00.000Z',
+            rowCount: 19_000,
+            truncated: false,
+            maxRows: undefined,
+            columnSchema: [{ name: 'record_date', type: 'VARCHAR', nullable: true }],
+          },
+        }),
+      } as unknown as ReturnType<typeof getCanvasBridge>);
+      const ctx = createMockContext({ tenantId: 'test-tenant', errors: dataframeQueryTool.errors });
+
+      const result = await dataframeQueryTool.handler(
+        dataframeQueryTool.input.parse({
+          sql: 'SELECT * FROM df_ABCDE_FGHIJ',
+          register_as: 'df_FULL0_RESLT',
+          preview: 1,
+        }),
+        ctx,
+      );
+
+      expect(result.row_count).toBe(19_000);
+      expect(result.row_count_capped).toBe(false);
+      expect(String(getEnrichment(ctx).notice)).toContain('preview');
+    });
+
+    it('renders the cap in the text block, not just the structured output', () => {
+      const text = (
+        dataframeQueryTool.format!({
+          columns: ['record_date'],
+          row_count: 1000,
+          row_count_capped: true,
+          rows: Array.from({ length: 1000 }, (_, i) => ({ record_date: `row-${i}` })),
+        })[0] as { text: string }
+      ).text;
+
+      expect(text).toContain('row_limit');
+      expect(text).not.toMatch(/^\*\*1000 rows\*\*$/m);
+    });
+  });
+
   it('formats output table', () => {
     const result = {
       columns: ['record_date', 'debt'],
       row_count: 1,
+      row_count_capped: false,
       rows: [{ record_date: '2026-05-28', debt: '39180000000000.00' }],
     };
     const blocks = dataframeQueryTool.format!(result);
@@ -425,7 +571,7 @@ describe('dataframeQueryTool', () => {
   });
 
   it('formats empty result', () => {
-    const result = { columns: ['record_date'], row_count: 0, rows: [] };
+    const result = { columns: ['record_date'], row_count: 0, row_count_capped: false, rows: [] };
     const blocks = dataframeQueryTool.format!(result);
     const text = (blocks[0] as { text: string }).text;
     expect(text).toContain('0 rows');

@@ -89,7 +89,7 @@ export const dataframeQueryTool = tool('treasury_dataframe_query', {
       .string()
       .optional()
       .describe(
-        'Persist result as a new dataframe. Use to chain analyses. The name must match df_XXXXX_XXXXX format or be a fresh df_<id>.',
+        'Persist the result as a new dataframe under this exact name, to chain analyses. The name is used verbatim — any name works, and a df_ prefix keeps it consistent with the tables the data tools mint. Echoed back in registered_as.',
       ),
     preview: z
       .number()
@@ -106,14 +106,23 @@ export const dataframeQueryTool = tool('treasury_dataframe_query', {
       .min(1)
       .max(10000)
       .default(1000)
-      .describe('Hard cap on rows in the response. Default 1000, max 10000.'),
+      .describe(
+        'Hard cap on rows the query may produce. Default 1000, max 10000. A query matching more rows than this stops at the cap and row_count_capped comes back true — raise it, or use register_as to materialize the whole result.',
+      ),
   }),
 
   output: z.object({
     columns: z.array(z.string()).describe('Column names in projection order.'),
     row_count: z
       .number()
-      .describe('Total rows the query produced (may exceed rows.length when capped).'),
+      .describe(
+        'Rows the query produced, up to row_limit. Exceeds rows.length when preview returned fewer. Read with row_count_capped: when that is true this number is row_limit itself, and the size of the full result is not in this response.',
+      ),
+    row_count_capped: z
+      .boolean()
+      .describe(
+        'True when the query matched more rows than row_limit, so row_count is that cap rather than a total. False means row_count is exact — including when it happens to equal row_limit.',
+      ),
     rows: z
       .array(z.record(z.string(), z.unknown()))
       .describe('Materialized rows, bounded by preview / row_limit.'),
@@ -228,6 +237,29 @@ export const dataframeQueryTool = tool('treasury_dataframe_query', {
       ctx.enrich.notice(
         'Query returned 0 rows. Verify dataframe names (use treasury_dataframe_describe) and check your WHERE conditions. Remember all Treasury columns are VARCHAR — use CAST for comparisons.',
       );
+    } else if (result.truncated) {
+      /**
+       * `row_limit` is applied as a cap on the query itself, so it produces
+       * exactly that many rows and `rowCount` equals `rows.length` — the
+       * row arithmetic below cannot see it. The canvas reads one row past the
+       * cap and reports `truncated`, which is the only signal separating a
+       * capped result from a table that holds exactly `row_limit` rows.
+       *
+       * Raising `preview` moves nothing here: it can never exceed `row_limit`,
+       * which is already the binding cap. It is named only when it kept rows
+       * back that `row_limit` did fetch.
+       */
+      const previewAlsoBinds = result.rows.length < result.rowCount;
+      ctx.enrich.truncated({
+        shown: result.rows.length,
+        cap: input.preview ?? input.row_limit,
+        guidance:
+          `Showing ${result.rows.length} rows. The query matched more than row_limit (${input.row_limit}), so row_count is that cap and the full size is not in this response. ` +
+          `Use register_as to materialize the whole result — its row_count is then exact — or raise row_limit (max 10000)` +
+          (previewAlsoBinds
+            ? `, and raise preview (currently ${input.preview}) to see more of it inline.`
+            : '.'),
+      });
     } else if (result.rowCount > result.rows.length) {
       /**
        * Name the cap that actually bound. `preview` may never exceed `row_limit`
@@ -251,6 +283,7 @@ export const dataframeQueryTool = tool('treasury_dataframe_query', {
     return {
       columns: result.columns,
       row_count: result.rowCount,
+      row_count_capped: result.truncated === true,
       rows: result.rows,
       registered_as: meta?.tableName,
       expires_at: meta?.expiresAt,
@@ -264,8 +297,16 @@ export const dataframeQueryTool = tool('treasury_dataframe_query', {
         `Registered as \`${result.registered_as}\` (expires ${result.expires_at ?? 'unknown'}).`,
       );
     }
-    const cappedNote =
-      result.row_count > result.rows.length
+    /**
+     * A bare row count reads as the size of the result. When row_limit capped
+     * the query it is the cap instead, and the header has to say so — this
+     * block is the whole disclosure for clients that forward only `content[]`.
+     */
+    const shownNote =
+      result.rows.length < result.row_count ? `, showing ${result.rows.length}` : '';
+    const cappedNote = result.row_count_capped
+      ? ` — capped at row_limit${shownNote}; more rows matched`
+      : shownNote
         ? ` (showing ${result.rows.length} of ${result.row_count})`
         : '';
     lines.push(`**${result.row_count} rows**${cappedNote}\n`);
