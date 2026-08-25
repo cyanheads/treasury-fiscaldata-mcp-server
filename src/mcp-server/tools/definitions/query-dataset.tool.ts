@@ -112,6 +112,13 @@ export const queryDatasetTool = tool('treasury_query_dataset', {
                 'Filter value. For "in", pass an array of strings. Dates use YYYY-MM-DD format.',
               ),
           })
+          /**
+           * Strict for the same reason the root is: a key this object does not
+           * declare is a filter the caller believes they set, and stripping it
+           * hands back rows the filter never narrowed. Root-level strictness
+           * does not reach a nested object, so it is marked here.
+           */
+          .strict()
           .describe('One filter condition.'),
       )
       .optional()
