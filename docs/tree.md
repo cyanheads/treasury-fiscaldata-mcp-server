@@ -1,6 +1,6 @@
 # treasury-fiscaldata-mcp-server - Directory Structure
 
-Generated on: 2026-08-13 07:47:12
+Generated on: 2026-08-25 08:19:00
 
 ```text
 treasury-fiscaldata-mcp-server/
@@ -171,7 +171,8 @@ treasury-fiscaldata-mcp-server/
 │       ├── get-exchange-rates.tool.test.ts
 │       ├── get-interest-rates.tool.test.ts
 │       ├── list-datasets.tool.test.ts
-│       └── query-dataset.tool.test.ts
+│       ├── query-dataset.tool.test.ts
+│       └── wire-contract.test.ts
 ├── .dockerignore
 ├── .env.example
 ├── .gitattributes
