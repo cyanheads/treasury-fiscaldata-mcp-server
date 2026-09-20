@@ -1,13 +1,17 @@
 {
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "treasury-fiscaldata-mcp-server",
   "version": "0.1.10",
   "description": "Query US Treasury national debt, interest rates, exchange rates, and fiscal datasets via MCP.",
   "author": {
-    "name": "cyanheads"
+    "name": "cyanheads",
+    "email": "casey@caseyjhand.com",
+    "url": "https://github.com/cyanheads"
   },
   "homepage": "https://github.com/cyanheads/treasury-fiscaldata-mcp-server#readme",
   "repository": "https://github.com/cyanheads/treasury-fiscaldata-mcp-server",
   "license": "Apache-2.0",
+  "keywords": ["treasury", "fiscal-data", "national-debt", "mcp", "mcp-server", "model-context-protocol"],
   "mcpServers": {
     "treasury-fiscaldata-mcp-server": {
       "command": "npx",

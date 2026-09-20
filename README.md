@@ -27,9 +27,11 @@
 
 ---
 
-## Tools
+## Overview
 
-Five tools for querying the US Treasury Fiscal Data API, plus two for SQL analytics over DuckDB-backed DataCanvas dataframes:
+US Treasury Fiscal Data — national debt, interest rates, exchange rates, and other fiscal datasets. Browse a curated catalog of 17 endpoints, query any endpoint directly, or stage large pulls as DuckDB dataframes for SQL analysis, from any MCP client. Runs as a stdio process, a local Streamable HTTP server, or the public hosted endpoint above.
+
+### Tools
 
 | Tool | Description |
 |:-----|:------------|
@@ -41,100 +43,91 @@ Five tools for querying the US Treasury Fiscal Data API, plus two for SQL analyt
 | `treasury_dataframe_describe` | List DataCanvas dataframes materialized by the treasury_* tools with schema, row count, and TTL |
 | `treasury_dataframe_query` | Run a single-statement SELECT against DataCanvas dataframes using standard DuckDB SQL |
 
-### `treasury_list_datasets`
+## Capability reference
 
-Browse the embedded catalog of available Treasury Fiscal Data endpoints. No network calls — serves from a static catalog bundled with the server.
+### `treasury_list_datasets` <sub>tool</sub>
 
 - Filter by category: `debt`, `interest_rates`, `exchange_rates`, `revenue_spending`, `savings_bonds`, `securities`, `other`
 - Keyword search against dataset name and description (case-insensitive substring)
+- No network calls — serves from a static catalog bundled with the server
 - Returns endpoint paths, field names, types, and update cadence
-- Use this first to get the exact endpoint path and field names before calling `treasury_query_dataset`
 - Every path and field name is checked against the live API by `bun run verify:catalog`, so a dataset Treasury moves or renames fails a gate rather than reaching a caller
 
 ---
 
-### `treasury_query_dataset`
+### `treasury_query_dataset` <sub>tool</sub>
 
-Generic parameterized query against any Treasury Fiscal Data endpoint.
-
-- Filter syntax: `{ field, operator, value }` where operator is `eq`, `gt`, `gte`, `lt`, `lte`, `in`
-- Multiple filters ANDed together
-- Pagination via `page_size` (1–10000) and `page_number`
-- Sort by any field, descending with `-` prefix (e.g. `-record_date`)
+- Filter syntax: `{ field, operator, value }` with operator `eq`, `gt`, `gte`, `lt`, `lte`, `in`; multiple filters ANDed together
+- Pagination via `page_size` (1–10000, default 100) and `page_number`; sort any field, descending with a `-` prefix
 - All response values are strings per the API contract — including numeric and date fields; `"null"` means no value
-- Pass `canvas_id` to stage the page as a DataCanvas table — the server assigns the name and returns it in `canvas_id`; read its schema with `treasury_dataframe_describe`, then SQL it with `treasury_dataframe_query` (requires `CANVAS_PROVIDER_TYPE=duckdb`)
+- Typed error reasons: `invalid_endpoint`, `invalid_field`, `invalid_filter`, `page_out_of_range`
+- `canvas_id` stages the page as a DataCanvas table (`df_XXXXX_XXXXX`) — read its schema with `treasury_dataframe_describe`, then SQL it with `treasury_dataframe_query` (requires `CANVAS_PROVIDER_TYPE=duckdb`)
 
 ---
 
-### `treasury_get_debt`
+### `treasury_get_debt` <sub>tool</sub>
 
-Convenience tool for national debt (Debt to the Penny) — total public debt outstanding broken into publicly-held debt and intragovernmental holdings.
-
-- `mode=latest` — most recent business-day record
-- `mode=date` — specific business day (YYYY-MM-DD; API only records debt on market-open days)
-- `mode=series` — date range, sorted newest-first; auto-spills to DataCanvas when the series exceeds 500 rows
+- `mode=latest` — most recent business-day record; `mode=date` — a specific business day (YYYY-MM-DD; the API only records debt on market-open days); `mode=series` — a date range, newest-first
 - Records go back to 1993-04-01
+- `mode=series` auto-stages to a DataCanvas table when the range exceeds 500 rows, or on request via `canvas_id`; paging stops at 50,000 rows, with the response naming how many of the match were retrieved
+- Series rows returned inline are capped at 20, newest first — the full retrieved set is reachable via `canvas_id`
+- `no_data_for_date` error when no record exists for a requested date
 
 ---
 
-### `treasury_get_interest_rates`
+### `treasury_get_interest_rates` <sub>tool</sub>
 
-Average interest rates the Treasury pays on outstanding securities. Updated monthly (end-of-month records).
-
-- Covers every security type Treasury reports — marketable issues, non-marketable series, and aggregate totals
-- `security_type` takes any `security_desc` value the data carries, matched exactly; which types Treasury publishes changes over the years, so when a filter matches nothing the response names the types the data does hold
-- `mode=latest` — most recent month's rates for all or one security type
-- `mode=series` — time-range history; auto-spills to DataCanvas when results exceed 200 rows
+- `mode=latest` — most recent month's rates for all or one security type; `mode=series` — a time-range history
+- Covers every security type Treasury reports — marketable issues, non-marketable series, and aggregate totals; which types are published changes over time, so a `security_type` filter that matches nothing gets back the types the most recent month actually holds
+- Rates are percentages (e.g. `"3.696"`), not basis points
+- `mode=series` auto-stages to DataCanvas when results exceed 200 rows, or on request via `canvas_id`; inline series preview is capped at 20 rows, newest first
 
 ---
 
-### `treasury_get_exchange_rates`
+### `treasury_get_exchange_rates` <sub>tool</sub>
 
-Official Treasury statutory reporting exchange rates for ~165 countries, published quarterly (March 31, June 30, Sep 30, Dec 31).
-
-- Rate expressed as foreign currency units per 1 USD (a Japan-Yen rate of 159.41 means 1 USD = 159.41 JPY)
-- These are **not** market exchange rates — required by US federal agencies for foreign-currency-to-USD conversions in official reporting
-- Filter to one or more countries by exact name; omit for every country in a quarter
-- `mode=latest` returns one row per currency — the operative rate, newest `record_date` and then newest `effective_date`, so an amended rate supersedes the one it replaced and a country holding two legal tenders keeps both
-- Treasury amends a published quarter by reissuing a rate under the same `record_date` with a later `effective_date`, so both dates ride every row; `mixed_record_dates` flags a result whose rows are not all from one quarter
-- `mode=series` auto-spills to DataCanvas when results exceed 500 rows (~19,000 rows full history, back to 2001-03-31)
+- Rate is foreign currency units per 1 USD (a Japan-Yen rate of 159.41 means 1 USD = 159.41 JPY) — official statutory reporting rates, not market rates
+- Published quarterly (Mar 31, Jun 30, Sep 30, Dec 31); filter to one or more countries by exact name, or omit for all ~165
+- `mode=latest` collapses to one row per currency — newest `record_date`, then newest `effective_date` — so an amendment supersedes the rate it replaced and a country with two legal tenders keeps both; `mixed_record_dates` flags a result whose rows span more than one quarter
+- `mode=series` auto-stages to DataCanvas when results exceed 500 rows; full published history is ~19,000 rows back to 2001-03-31, well within the 50,000-row paging cap
+- `country_not_found` error when a requested country has no records
 
 ---
 
-### `treasury_dataframe_describe` / `treasury_dataframe_query`
+### `treasury_dataframe_describe` <sub>tool</sub>
 
-In-conversation SQL analytics over the dataframes that `treasury_query_dataset`, `treasury_get_debt`, `treasury_get_interest_rates`, and `treasury_get_exchange_rates` materialize on a shared DuckDB-backed DataCanvas. Each data-returning call with `canvas_id` adds a `df_XXXXX_XXXXX` handle; read its columns with `treasury_dataframe_describe`, then pass the handle to `treasury_dataframe_query` for joins, aggregates, window functions, and CTEs — standard DuckDB SQL.
+- Lists every active DataCanvas dataframe for the tenant, or one by name — source tool, query params, created/expiry timestamps, row count, and column schema
+- Requires `CANVAS_PROVIDER_TYPE=duckdb`; `canvas_unavailable` error otherwise
+- Columns show name, DuckDB type, and nullability — all Treasury columns are VARCHAR
+- `truncated` / `max_rows` flag when the source pull was capped before full materialization
+- Per-table TTL is sliding, touched on every dataframe op — default 24h, override with `CANVAS_TTL_MS`
 
-- **Read-only.** Writes, DDL, DROP, COPY, PRAGMA, ATTACH, and external-file table functions are rejected by the SQL gate. System catalogs (`information_schema`, `pg_catalog`, `sqlite_master`, `duckdb_*`) are denied at the bridge layer.
-- **All Treasury columns are VARCHAR.** CAST to `DECIMAL` or `DATE` for arithmetic and date comparisons.
-- **`register_as` chaining.** `treasury_dataframe_query` can persist its result as a new dataframe with a fresh TTL for multi-step analysis.
-- **Per-table TTL.** Dataframes age on their own clock (default 24h, override with `CANVAS_TTL_MS`).
-- Requires `CANVAS_PROVIDER_TYPE=duckdb`.
+---
+
+### `treasury_dataframe_query` <sub>tool</sub>
+
+- Read-only: writes, DDL, DROP, COPY, PRAGMA, ATTACH, and external-file table functions are rejected; system catalogs (`information_schema`, `pg_catalog`, `sqlite_master`, `duckdb_*`) are denied
+- All Treasury dataframe columns are VARCHAR — CAST to `DECIMAL` or `DATE` for arithmetic and date comparisons
+- `row_limit` caps rows produced (default 1000, max 10000); `preview` bounds the inline response and may not exceed `row_limit`
+- `register_as` persists the result as a new dataframe with a fresh TTL, for chained multi-step analysis
+- Typed error reasons: `canvas_unavailable`, `system_catalog_access`, `invalid_sql`, `missing_table`, `invalid_query_bounds`
 
 ## Features
 
-Built on [`@cyanheads/mcp-ts-core`](https://www.npmjs.com/package/@cyanheads/mcp-ts-core):
+Built on [`@cyanheads/mcp-ts-core`](https://github.com/cyanheads/mcp-ts-core): stdio and Streamable HTTP transports, pluggable auth (`none` / `jwt` / `oauth`), swappable storage (`in-memory`, `filesystem`, `Supabase`, `Cloudflare KV/R2/D1`), structured logging with optional OpenTelemetry tracing.
 
-- Declarative tool definitions — single file per tool, framework handles registration and validation
-- Structured output schemas with automatic formatting for human-readable display
-- Unified error handling — handlers throw, framework catches, classifies, and formats
-- Pluggable auth: `none`, `jwt`, `oauth`
-- Structured logging with request-scoped context
-- STDIO and Streamable HTTP transports
+Fiscal Data-specific:
 
-Treasury-specific:
-
-- Curated catalog of 17 Treasury Fiscal Data endpoints with field metadata — no discovery round-trip required. Pass any endpoint path directly to `treasury_query_dataset` to access datasets not in the catalog.
-- Convenience tools for the three most-queried datasets (national debt, interest rates, exchange rates)
-- Full generic access to any Fiscal Data endpoint via `treasury_query_dataset`
-- DataCanvas integration: large time-series pulls register as `df_<id>` dataframes queryable via DuckDB SQL
-- No API keys required — the US Treasury Fiscal Data API is free and public
+- Curated catalog of 17 endpoints with field metadata — no discovery round-trip required; pass any endpoint path directly to `treasury_query_dataset` for datasets outside the catalog
+- Convenience tools for the three most-queried datasets — national debt, interest rates, exchange rates
+- DataCanvas integration: large pulls register as `df_<id>` dataframes queryable via DuckDB SQL, with automatic staging thresholds per tool
+- No API key required — the US Treasury Fiscal Data API is free and public
 
 Agent-friendly output:
 
-- Filter expression echo (`applied_filters`) so agents can verify what was sent to the API
-- Field-label maps on query results (`field_labels`) map raw field names to human-readable labels
-- Enrichment notices on empty results, partial-country mismatches, staged canvas tables, and truncated series guide the next tool call
+- Provenance: filter-expression echo (`applied_filters`) and field-label maps (`field_labels`) let agents verify what was sent and read raw field names
+- Enrichment notices: empty-result guidance, partial-country mismatches, canvas staging confirmations, and truncated-series warnings all name the next tool call
+- Graceful truncation: series and query results carry `truncated` / `retrieved_records` / `row_count_capped` fields instead of silently dropping rows
 - Canvas provenance: source tool, original query parameters, row count, and column schema surfaced by `treasury_dataframe_describe`
 
 ## Getting started
@@ -277,7 +270,7 @@ cp .env.example .env
 | `CANVAS_TTL_MS` | Per-table TTL for DataCanvas dataframes in milliseconds. | `86400000` (24h) |
 | `MCP_TRANSPORT_TYPE` | Transport: `stdio` or `http`. | `stdio` |
 | `MCP_HTTP_PORT` | Port for HTTP server. | `3010` |
-| `MCP_SESSION_MODE` | HTTP session handling: `auto`, `stateful`, or `stateless`. `.env.example` ships `stateless`. | `auto` (resolves to `stateful`) |
+| `MCP_SESSION_MODE` | HTTP session handling: `auto`, `stateful`, or `stateless`. Setting it overrides the server's own declaration; leaving it unset falls through to that declaration, not to the schema default. | `stateless` (declared in `src/index.ts`) |
 | `MCP_AUTH_MODE` | Auth mode: `none`, `jwt`, or `oauth`. | `none` |
 | `MCP_LOG_LEVEL` | Log level (`debug`, `info`, `notice`, `warning`, `error`). | `info` |
 | `LOGS_DIR` | Directory for log files (Node.js/Bun only). | `<project-root>/logs` |
@@ -341,7 +334,7 @@ See [`CLAUDE.md`](./CLAUDE.md) and [`AGENTS.md`](./AGENTS.md) for development gu
 
 ## Contributing
 
-Issues and pull requests are welcome. Run checks and tests before submitting:
+Issues are welcome. Run checks and tests before submitting:
 
 ```sh
 bun run devcheck
