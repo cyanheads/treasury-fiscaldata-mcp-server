@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.1.11](changelog/0.1.x/0.1.11.md) — 2026-09-20 · 🛡️ Security
+
+mcp-ts-core moves to ^0.13.6 — the skill tree relocates to framework-skills/, the server declares a stateless session mode explicitly, and the one CodeQL workflow ships. treasury_dataframe_query's Markdown formatter now escapes backslashes ahead of pipes, closing a CodeQL incomplete-sanitization finding.
+
 ## [0.1.10](changelog/0.1.x/0.1.10.md) — 2026-08-25
 
 @cyanheads/mcp-ts-core ^0.12.3 brings the MCP SDK v2 migration: HTTP serves protocol revision 2026-07-28 alongside the 2025 era, advertised schemas are JSON Schema 2020-12 with strict tool inputs and a declared error envelope, and treasury_query_dataset's filter objects are strict too
