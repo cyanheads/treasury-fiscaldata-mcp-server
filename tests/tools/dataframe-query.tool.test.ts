@@ -577,4 +577,79 @@ describe('dataframeQueryTool', () => {
     expect(text).toContain('0 rows');
     expect(text).toContain('No rows');
   });
+
+  /**
+   * A Treasury column is VARCHAR and carries whatever upstream published, so a
+   * cell can hold a backslash. Escaping `|` alone leaves those backslashes to be
+   * read as escapes by the client's renderer, which consumes them — the value
+   * the agent reads in `content[]` is then not the value in the dataframe.
+   */
+  describe('markdown cell escaping', () => {
+    /**
+     * Markdown's backslash-escape rule: a backslash before ASCII punctuation is
+     * consumed and the punctuation emitted literally. This is what a client does
+     * to `content[]`, so the rendered text — not the escaped source — is the
+     * surface a cell value has to survive.
+     */
+    function renderMarkdown(cell: string): string {
+      return cell.replace(/\\([!-/:-@[-`{-~])/g, '$1');
+    }
+
+    /** The single data cell of a one-column, one-row rendered table. */
+    function renderedCell(value: unknown): string {
+      const text = (
+        dataframeQueryTool.format!({
+          columns: ['v'],
+          row_count: 1,
+          row_count_capped: false,
+          rows: [{ v: value }],
+        })[0] as { text: string }
+      ).text;
+      const row = text.split('\n').at(-1) ?? '';
+      return row.replace(/^\| /, '').replace(/ \|$/, '');
+    }
+
+    /**
+     * Every `|` left unescaped splits the row into another cell, so the column
+     * count stops matching the header. Dropping the escape pairs first is what
+     * separates a real separator from an escaped one.
+     */
+    function hasUnescapedPipe(cell: string): boolean {
+      return cell.replace(/\\[\s\S]/g, '').includes('|');
+    }
+
+    /** Each `\\` below is one literal backslash in the cell value. */
+    it.each([
+      ['a backslash before a pipe', 'x\\|y'],
+      ['a backslash before other punctuation', 'a\\*b'],
+      ['a trailing backslash', 'C:\\tmp\\'],
+      ['a bare pipe', 'x|y'],
+    ])('renders %s as the literal value', (_label, value) => {
+      const cell = renderedCell(value);
+
+      expect(hasUnescapedPipe(cell)).toBe(false);
+      expect(renderMarkdown(cell)).toBe(value);
+    });
+
+    it('keeps a serialized object cell valid JSON through the render', () => {
+      const value = { q: 'a|b"c' };
+      const rendered = renderMarkdown(renderedCell(value));
+
+      expect(rendered).toBe(JSON.stringify(value));
+      expect(JSON.parse(rendered)).toEqual(value);
+    });
+
+    it('leaves structuredContent byte-identical to the dataframe row', async () => {
+      const rows = [{ v: 'x\\|y' }];
+      resolveWith(makeQueryResult(rows, 1, ['v']));
+
+      const ctx = createMockContext({ tenantId: 'test-tenant', errors: dataframeQueryTool.errors });
+      const result = await dataframeQueryTool.handler(
+        dataframeQueryTool.input.parse({ sql: 'SELECT v FROM df_ABCDE_FGHIJ' }),
+        ctx,
+      );
+
+      expect(result.rows).toEqual(rows);
+    });
+  });
 });

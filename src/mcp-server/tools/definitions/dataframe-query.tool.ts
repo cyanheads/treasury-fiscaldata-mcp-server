@@ -17,6 +17,18 @@ import { getCanvasBridge } from '@/services/canvas-bridge/canvas-bridge.js';
  */
 const GATE_REASONS: ReadonlySet<string> = new Set(Object.values(SQL_GATE_REASONS));
 
+/**
+ * Escape one Markdown table cell. Backslashes go first and pipes second: a pipe
+ * escaped into `\|` while the value's own backslashes are left bare puts the
+ * cell's content at the mercy of the client's renderer, which consumes a
+ * backslash before any ASCII punctuation. Treasury columns are VARCHAR carrying
+ * whatever upstream published, so the value the agent reads in `content[]` would
+ * silently differ from the one in `structuredContent`.
+ */
+function escapeCell(value: string): string {
+  return value.replace(/\\/g, '\\\\').replace(/\|/g, '\\|');
+}
+
 export const dataframeQueryTool = tool('treasury_dataframe_query', {
   title: 'Query Treasury Dataframes',
   description:
@@ -323,8 +335,8 @@ export const dataframeQueryTool = tool('treasury_dataframe_query', {
       const cells = result.columns.map((c) => {
         const v = row[c];
         if (v === null || v === undefined) return '';
-        if (typeof v === 'string') return v.replace(/\|/g, '\\|');
-        if (typeof v === 'object') return JSON.stringify(v).replace(/\|/g, '\\|');
+        if (typeof v === 'string') return escapeCell(v);
+        if (typeof v === 'object') return escapeCell(JSON.stringify(v));
         return String(v);
       });
       lines.push(`| ${cells.join(' | ')} |`);
