@@ -43,6 +43,15 @@ await createApp({
   resources: [],
   prompts: [],
   instructions: INSTRUCTIONS,
+  /**
+   * Every tool here answers from the Fiscal Data API or the tenant's canvas in
+   * one round trip — none gates on `ctx.requestInput`, so there is nothing a
+   * stateful session would carry between calls. Declared in `src/` rather than
+   * left to a deployment's `MCP_SESSION_MODE`, which still wins whenever it
+   * carries a meaningful value. `require: 'stateful'` is deliberately unset:
+   * refusing a stateless start would strand a posture this server serves fine.
+   */
+  sessionMode: 'stateless',
   setup(core) {
     initFiscalDataService();
     initCanvasBridge(core.canvas);
