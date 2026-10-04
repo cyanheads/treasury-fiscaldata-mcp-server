@@ -5,7 +5,9 @@
  */
 
 import { createApp } from '@cyanheads/mcp-ts-core';
+import { getServerConfig } from './config/server-config.js';
 import { dataframeDescribeTool } from './mcp-server/tools/definitions/dataframe-describe.tool.js';
+import { dataframeDropTool } from './mcp-server/tools/definitions/dataframe-drop.tool.js';
 import { dataframeQueryTool } from './mcp-server/tools/definitions/dataframe-query.tool.js';
 import { getDebtTool } from './mcp-server/tools/definitions/get-debt.tool.js';
 import { getExchangeRatesTool } from './mcp-server/tools/definitions/get-exchange-rates.tool.js';
@@ -39,6 +41,7 @@ await createApp({
     getExchangeRatesTool,
     dataframeDescribeTool,
     dataframeQueryTool,
+    dataframeDropTool,
   ],
   resources: [],
   prompts: [],
@@ -53,6 +56,7 @@ await createApp({
    */
   sessionMode: 'stateless',
   setup(core) {
+    getServerConfig();
     initFiscalDataService();
     initCanvasBridge(core.canvas);
   },

@@ -26,6 +26,7 @@ vi.mock('@/services/canvas-bridge/canvas-bridge.js', () => ({
 }));
 
 import { dataframeDescribeTool } from '@/mcp-server/tools/definitions/dataframe-describe.tool.js';
+import { dataframeDropTool } from '@/mcp-server/tools/definitions/dataframe-drop.tool.js';
 import { dataframeQueryTool } from '@/mcp-server/tools/definitions/dataframe-query.tool.js';
 import { getDebtTool } from '@/mcp-server/tools/definitions/get-debt.tool.js';
 import { getExchangeRatesTool } from '@/mcp-server/tools/definitions/get-exchange-rates.tool.js';
@@ -43,6 +44,7 @@ const ALL_TOOLS = [
   { name: 'treasury_get_exchange_rates', def: getExchangeRatesTool },
   { name: 'treasury_dataframe_describe', def: dataframeDescribeTool },
   { name: 'treasury_dataframe_query', def: dataframeQueryTool },
+  { name: 'treasury_dataframe_drop', def: dataframeDropTool },
 ];
 
 /** The text of every `content[]` block a tool call produced, joined. */

@@ -176,6 +176,15 @@ export class CanvasBridge {
     return meta ? { result, meta } : { result };
   }
 
+  /** Remove a tenant's staged table and its matching provenance record. */
+  async drop(ctx: Context, tableName: string): Promise<boolean> {
+    await this.sweepExpired(ctx);
+    const instance = await this.acquireSharedCanvas(ctx);
+    const dropped = await instance.drop(tableName);
+    await ctx.state.delete(`${META_PREFIX}${tableName}`);
+    return dropped;
+  }
+
   private async sweepExpired(ctx: Context): Promise<void> {
     const nowIso = new Date().toISOString();
     let instance: CanvasInstance | undefined;
