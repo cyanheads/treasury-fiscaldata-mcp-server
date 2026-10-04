@@ -18,19 +18,16 @@
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "@cyanheads/treasury-fiscaldata-mcp-server",
-      "runtimeHint": "bun",
+      "runtimeHint": "npx",
       "version": "0.1.11",
-      "packageArguments": [
-        {
-          "type": "positional",
-          "value": "run"
-        },
-        {
-          "type": "positional",
-          "value": "start:stdio"
-        }
-      ],
       "environmentVariables": [
+        {
+          "name": "TREASURY_DATAFRAME_DROP_ENABLED",
+          "description": "Enable treasury_dataframe_drop to delete staged dataframes. Requires CANVAS_PROVIDER_TYPE=duckdb.",
+          "format": "boolean",
+          "isRequired": false,
+          "default": "false"
+        },
         {
           "name": "CANVAS_PROVIDER_TYPE",
           "description": "Canvas engine for DataCanvas SQL tools. Set to 'duckdb' to enable treasury_dataframe_* tools. Set to 'none' to disable.",
@@ -54,19 +51,22 @@
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "@cyanheads/treasury-fiscaldata-mcp-server",
-      "runtimeHint": "bun",
+      "runtimeHint": "npx",
       "version": "0.1.11",
-      "packageArguments": [
+      "environmentVariables": [
         {
-          "type": "positional",
-          "value": "run"
+          "name": "MCP_TRANSPORT_TYPE",
+          "description": "Selects the HTTP transport.",
+          "format": "string",
+          "value": "http"
         },
         {
-          "type": "positional",
-          "value": "start:http"
-        }
-      ],
-      "environmentVariables": [
+          "name": "TREASURY_DATAFRAME_DROP_ENABLED",
+          "description": "Enable treasury_dataframe_drop to delete staged dataframes. Requires CANVAS_PROVIDER_TYPE=duckdb.",
+          "format": "boolean",
+          "isRequired": false,
+          "default": "false"
+        },
         {
           "name": "CANVAS_PROVIDER_TYPE",
           "description": "Canvas engine for DataCanvas SQL tools. Set to 'duckdb' to enable treasury_dataframe_* tools. Set to 'none' to disable.",

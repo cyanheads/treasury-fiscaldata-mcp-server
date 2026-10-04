@@ -4,9 +4,9 @@
   "version": "0.1.11",
   "description": "Query US Treasury national debt, interest rates, exchange rates, and fiscal datasets via MCP.",
   "author": {
-    "name": "cyanheads",
+    "name": "Casey Hand",
     "email": "casey@caseyjhand.com",
-    "url": "https://github.com/cyanheads"
+    "url": "https://caseyjhand.com"
   },
   "homepage": "https://github.com/cyanheads/treasury-fiscaldata-mcp-server#readme",
   "repository": "https://github.com/cyanheads/treasury-fiscaldata-mcp-server",
@@ -18,8 +18,23 @@
       "args": ["-y", "@cyanheads/treasury-fiscaldata-mcp-server"],
       "env": {
         "MCP_TRANSPORT_TYPE": "stdio",
-        "CANVAS_PROVIDER_TYPE": "duckdb"
+        "CANVAS_PROVIDER_TYPE": "${user_config.canvas_provider_type}",
+        "TREASURY_DATAFRAME_DROP_ENABLED": "${user_config.dataframe_drop_enabled}"
       }
+    }
+  },
+  "userConfig": {
+    "canvas_provider_type": {
+      "title": "Canvas Provider Type",
+      "type": "string",
+      "default": "duckdb",
+      "description": "Canvas engine for DataCanvas SQL tools. 'duckdb' enables treasury_dataframe_* tools; 'none' disables them."
+    },
+    "dataframe_drop_enabled": {
+      "title": "Enable Dataframe Drop",
+      "type": "boolean",
+      "default": false,
+      "description": "Enable treasury_dataframe_drop to delete staged dataframes. Requires the duckdb canvas provider."
     }
   }
 }
