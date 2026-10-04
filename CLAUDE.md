@@ -2,9 +2,9 @@
 
 **Server:** @cyanheads/treasury-fiscaldata-mcp-server
 **Version:** 0.1.11
-**Framework:** [@cyanheads/mcp-ts-core](https://www.npmjs.com/package/@cyanheads/mcp-ts-core) `^0.13.6`
+**Framework:** [@cyanheads/mcp-ts-core](https://www.npmjs.com/package/@cyanheads/mcp-ts-core) `^0.13.11`
 **Engines:** Bun ≥1.4.0, Node ≥24.0.0
-**MCP SDK:** `@modelcontextprotocol/server` ^2.0.0 (+ `@modelcontextprotocol/client` ^2.0.0 for client-side test code)
+**MCP SDK:** `@modelcontextprotocol/server` ^2.2.0 (declare `@modelcontextprotocol/client` explicitly for client-side test code)
 **Zod:** ^4.6.5
 
 > **Read the framework docs first:** `node_modules/@cyanheads/mcp-ts-core/CLAUDE.md` contains the full API reference — builders, Context, error codes, exports, patterns. This file covers server-specific conventions only.
@@ -13,7 +13,7 @@
 
 ## Server Overview
 
-**Tools (7):**
+**Tools (8; drop disabled by default):**
 
 | Tool | Purpose |
 |:-----|:--------|
@@ -24,6 +24,7 @@
 | `treasury_get_exchange_rates` | Official statutory exchange rates for ~165 countries (quarterly) |
 | `treasury_dataframe_describe` | List DataCanvas dataframes with schema, row count, and TTL |
 | `treasury_dataframe_query` | Run single-statement SELECT against DataCanvas dataframes via DuckDB |
+| `treasury_dataframe_drop` | Delete a staged table and provenance; opt in with `TREASURY_DATAFRAME_DROP_ENABLED=true` |
 
 **Services:**
 
@@ -31,6 +32,8 @@
 - `canvas-bridge` — Adapter over framework DataCanvas: `df_<id>` minting, per-table TTL, system-catalog SQL deny
 
 **DataCanvas:** requires `CANVAS_PROVIDER_TYPE=duckdb`. All Treasury columns are VARCHAR — CAST to DECIMAL or DATE for arithmetic.
+
+**Dataframe deletion:** the drop definition is always present in the manifest. `disabledTool()` keeps it off `tools/list` unless `TREASURY_DATAFRAME_DROP_ENABLED=true`, with an enable hint on the HTTP landing page. The bridge drops only the named table on the tenant's shared canvas and clears its provenance. No `ctx.requestInput` flow is needed for this opt-in local-data capability.
 
 ---
 
@@ -107,6 +110,8 @@ export function getServerConfig() {
 
 `parseEnvConfig` maps Zod schema paths → env var names so errors name the variable (`MY_API_KEY`) not the path (`apiKey`). Throws `ConfigurationError`, which the framework prints as a clean startup banner.
 
+Call `getServerConfig()` in `setup()` so invalid settings fail before transport startup. Empty or whole-value `${…}` settings normalize to unset. This server keeps the existing `CANVAS_TTL_MS` milliseconds-to-seconds conversion and a 60-second minimum in its config schema.
+
 ### Server instructions
 
 `createApp({ instructions })` — optional server-level orientation, sent to clients on every `initialize` as session-level context. Use it for deployment guidance (connection aliases, regional notes, scope hints) instead of repeating the same context across tool descriptions. Client adoption is uneven, but there's no downside when set.
@@ -136,9 +141,10 @@ Handlers receive a unified `ctx` object. Key properties:
 | Property | Description |
 |:---------|:------------|
 | `ctx.log` | Request-scoped logger — `.debug()`, `.info()`, `.notice()`, `.warning()`, `.error()`. Auto-correlates requestId, traceId, tenantId. Dual-sink: Pino **and** `notifications/message` to the client, so treat it as client-visible. |
-| `ctx.state` | Tenant-scoped KV — `.get(key)`, `.set(key, value, { ttl? })`, `.delete(key)`, `.getMany(keys)`, `.list(prefix, { cursor, limit })`. Accepts any serializable value. Keys must match `[a-zA-Z0-9_.\-/]+` — no colons. |
+| `ctx.state` | Tenant-scoped KV — `.get(key)`, `.set(key, value, { ttl? })`, `.delete(key)`, `.getMany(keys)`, `.list(prefix, { cursor, limit })`. Values round-trip as JSON on every provider, including mock state: Dates become strings and unencodable values fail with `SerializationError`. Keys must match `[a-zA-Z0-9_.\-/]+` — no colons. |
 | `ctx.requestInput` | Suspend and ask the caller for more input — `return ctx.requestInput({ inputRequests: { key: inputRequired.elicit({ message, requestedSchema }) } })`. Never returns; the handler is re-entered with the answers. Always present. |
 | `ctx.inputs` | Reader over a retried request's responses — `.accepted(key, schema)`, `.view(key)`, `.state()`, `.dropped`. Empty on the first round. |
+| `ctx.clientCapabilities` | Client-declared capabilities for this request; `undefined` on a 2025-era stateless HTTP request. Never a reason to skip a consent gate. |
 | `ctx.enrich` | Success-path agent context (empty-result notices, query echo, pagination totals) — `ctx.enrich(...)` or `.notice()` / `.total()` / `.echo()` / `.truncated()`. Reaches `structuredContent` and `content[]`; lands only when the definition declares an `enrichment` block (no-op otherwise). |
 | `ctx.content` | Non-text content blocks — `.image(data, mimeType)`, `.audio(data, mimeType)`, or `ctx.content(block)` for a raw block. Prepended to `content[]` after `format()`; never enters `structuredContent`. |
 | `ctx.signal` | `AbortSignal` for cancellation. |
@@ -151,7 +157,7 @@ Handlers receive a unified `ctx` object. Key properties:
 
 Handlers throw — the framework catches, classifies, and formats.
 
-**Recommended: typed error contract.** Declare `errors: [{ reason, code, when, recovery, retryable?, severity?, thrownBy? }]` on `tool()` / `resource()` to receive `ctx.fail(reason, …)` typed against the reason union. TypeScript catches typos at compile time, `data.reason` is auto-populated for observability, linter enforces conformance against the handler body. `recovery` is required (≥ 5 words, lint-validated) — the single source of truth for the agent's next move. Pass `ctx.recoveryFor('reason')` as the throw's data to put it on the wire (`data.recovery.hint`, mirrored into `content[]` text unless the message already contains it verbatim); override with an explicit `{ recovery: { hint: '...' } }` when dynamic runtime context matters. Forwarding it is lint-enforced per throw site (`error-contract-recovery-unforwarded`). Mark an entry the service layer throws with `thrownBy: 'service'` so `error-contract-unthrown` skips it — lint-only metadata, nothing at runtime reads it. Baseline codes (`InternalError`, `ServiceUnavailable`, `Timeout`, `ValidationError`, `SerializationError`, `RequestCancelled`) bubble freely and don't need declaring.
+**Recommended: typed error contract.** Declare `errors: [{ reason, code, when, recovery, retryable?, severity?, thrownBy? }]` on `tool()` / `resource()` to receive `ctx.fail(reason, …)` typed against the reason union. TypeScript catches typos at compile time, `data.reason` is auto-populated for observability, linter enforces conformance against the handler body. `recovery` is required (≥ 5 words, lint-validated) — the single source of truth for the agent's next move. The framework puts it on the wire whenever a failure carrying that `reason` arrives without a hint — a bare `ctx.fail('reason')` or a service throw with `data: { reason }` — as `data.recovery.hint`, mirrored into `content[]` text unless the message already contains it verbatim; override with an explicit `{ recovery: { hint: '...' } }` when dynamic runtime context matters. Every error envelope also carries `data.requestId`, the id the server's log records for that call carry, and `content[]` closes with `(reason … · request <id>)`. Mark an entry the service layer throws with `thrownBy: 'service'` so `error-contract-unthrown` skips it — lint-only metadata, nothing at runtime reads it. Baseline codes (`InternalError`, `ServiceUnavailable`, `Timeout`, `ValidationError`, `SerializationError`, `RequestCancelled`) bubble freely and don't need declaring.
 
 ```ts
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
@@ -163,7 +169,7 @@ errors: [
 ],
 async handler(input, ctx) {
   const item = await db.find(input.id);
-  if (!item) throw ctx.fail('no_match', `No item ${input.id}`, ctx.recoveryFor('no_match'));
+  if (!item) throw ctx.fail('no_match', `No item ${input.id}`);
   return item;
 }
 ```
@@ -195,9 +201,9 @@ See framework CLAUDE.md and the `api-errors` skill for the full auto-classificat
 
 ```text
 src/
-  index.ts                                  # createApp() entry point — registers 7 tools, inits services
+  index.ts                                  # createApp() entry point — 8 tool definitions, inits services
   config/
-    server-config.ts                        # CANVAS_TTL_MS → datasetTtlSeconds
+    server-config.ts                        # CANVAS_TTL_MS + TREASURY_DATAFRAME_DROP_ENABLED
   services/
     fiscal-data/
       fiscal-data-service.ts               # Treasury Fiscal Data API client
@@ -214,6 +220,7 @@ src/
       get-exchange-rates.tool.ts          # treasury_get_exchange_rates
       dataframe-describe.tool.ts          # treasury_dataframe_describe
       dataframe-query.tool.ts             # treasury_dataframe_query
+      dataframe-drop.tool.ts              # treasury_dataframe_drop (opt-in)
 ```
 
 ---
@@ -283,13 +290,14 @@ When you complete a skill's checklist, check the boxes and add a completion time
 
 | Command | Purpose |
 |:--------|:--------|
-| `bun run build` | Compile TypeScript |
+| `bun run build` | Type-check, emit declarations, and bundle Node-compatible ESM |
 | `bun run rebuild` | Clean + build |
 | `bun run clean` | Remove build artifacts |
 | `bun run devcheck` | Lint + format + typecheck + security + changelog sync |
 | `bun run audit:fix` | `bun audit fix` — upgrade vulnerable packages to the lowest safe version within existing ranges. First response when `devcheck` flags a transitive advisory; then `bun update <name>`, then `bun dedupe` |
 | `bun run audit:refresh` | Delete `bun.lock`, reinstall, and re-run `bun audit`. Last resort after `audit:fix`, `bun update <name>`, and `bun dedupe` — it re-resolves every ranged dep, the framework pin included. |
 | `bun run lint:mcp` | Run the MCP definition linter standalone (rule catalog: `api-linter` skill) |
+| `bun run lint:deps` | Knip checks unused and missing dependencies across source, scripts, and tests |
 | `bun run lint:packaging` | Packaging surface checks — `server.json`/`manifest.json` env-var parity (run by devcheck) |
 | `bun run verify:catalog` | Probe every `datasets.ts` entry against the live Fiscal Data API — fails on a path that does not answer or a field the endpoint does not have. Needs the network, so it is not in `devcheck` or the test suite; run it after touching the catalog and before a release |
 | `bun run list-skills` | Print the skill registry |
@@ -306,6 +314,12 @@ When you complete a skill's checklist, check the boxes and add a completion time
 **CI is one file.** `.github/workflows/codeql.yml` is the only GitHub Actions workflow: CodeQL is GitHub-owned end to end, and the file runs only while the repo's CodeQL *default setup* is turned off. Verification — `devcheck`, tests, `verify:catalog`, the release gates — runs locally; don't add a workflow that re-runs it.
 
 ---
+
+## Local build and dependency-check overrides
+
+Preserve these project-specific changes when syncing framework scripts: `scripts/build.ts` runs TypeScript with `--emitDeclarationOnly`, then Bun's Node-targeted ESM bundler with external packages and linked source maps. TypeScript uses the selected build project; Bun resolves aliases from `tsconfig.json`. The published entry points remain `dist/index.js` and `dist/index.d.ts`; framework and DuckDB packages must stay external.
+
+`scripts/devcheck.ts` runs `bun run lint:deps` in its dependency check. `knip.jsonc` covers every source, script, and test file, including disconnected modules; documented exceptions cover dynamic logging, tooling, the separately installed registry CLI, and the framework linter's source fallback. Do not restore `tsc-alias` or `depcheck`: both dependency trees include unpatched `braces`.
 
 ## Bundling
 

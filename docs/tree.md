@@ -1,6 +1,6 @@
 # treasury-fiscaldata-mcp-server - Directory Structure
 
-Generated on: 2026-09-20 19:26:44
+Generated on: 2026-10-04 06:14:42
 
 ```text
 treasury-fiscaldata-mcp-server/
@@ -127,9 +127,11 @@ treasury-fiscaldata-mcp-server/
 │   ├── clean-mcpb.ts
 │   ├── clean.ts
 │   ├── devcheck.ts
+│   ├── install-otel.ts
 │   ├── lint-mcp.ts
 │   ├── lint-packaging.ts
 │   ├── list-skills.ts
+│   ├── prune-musl-packages.ts
 │   ├── release-github.ts
 │   ├── tree.ts
 │   └── verify-catalog.ts
@@ -144,6 +146,7 @@ treasury-fiscaldata-mcp-server/
 │   │   └── tools/
 │   │       └── definitions/
 │   │           ├── dataframe-describe.tool.ts
+│   │           ├── dataframe-drop.tool.ts
 │   │           ├── dataframe-query.tool.ts
 │   │           ├── get-debt.tool.ts
 │   │           ├── get-exchange-rates.tool.ts
@@ -161,15 +164,23 @@ treasury-fiscaldata-mcp-server/
 │   │       └── types.ts
 │   └── index.ts
 ├── tests/
+│   ├── config/
+│   │   ├── node-env.test.ts
+│   │   └── server-config.test.ts
+│   ├── helpers/
+│   │   └── node-executable.ts
 │   ├── prompts/
 │   ├── resources/
 │   ├── scripts/
+│   │   ├── build.test.ts
+│   │   ├── dependency-check.test.ts
 │   │   ├── lint-packaging.test.ts
 │   │   └── verify-catalog.test.ts
 │   ├── services/
 │   │   └── fiscal-data-service.test.ts
 │   └── tools/
 │       ├── dataframe-describe.tool.test.ts
+│       ├── dataframe-drop.tool.test.ts
 │       ├── dataframe-query.tool.test.ts
 │       ├── get-debt.tool.test.ts
 │       ├── get-exchange-rates.tool.test.ts
@@ -191,6 +202,7 @@ treasury-fiscaldata-mcp-server/
 ├── CLAUDE.md
 ├── devcheck.config.json
 ├── Dockerfile
+├── knip.jsonc
 ├── LICENSE
 ├── manifest.json
 ├── package.json
