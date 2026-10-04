@@ -170,9 +170,7 @@ export const getDebtTool = tool('treasury_get_debt', {
       });
       const row = envelope.data[0];
       if (!row || envelope.meta['total-count'] === 0) {
-        throw ctx.fail('no_data_for_date', 'No debt records found.', {
-          ...ctx.recoveryFor('no_data_for_date'),
-        });
+        throw ctx.fail('no_data_for_date', 'No debt records found.');
       }
       return {
         record_date: row['record_date'] ?? '',

@@ -224,25 +224,42 @@ export const queryDatasetTool = tool('treasury_query_dataset', {
       /**
        * Re-route service-layer classification errors through ctx.fail so
        * data.reason is typed against the declared contract and the JSON-RPC
-       * error code matches what the contract advertises. ctx.fail builds the
-       * wire error from exactly the data argument given, so the contract's
-       * recovery hint and the endpoint that failed are forwarded explicitly —
-       * nothing carries over from the caught error on its own.
+       * error code matches what the contract advertises. Explicit recovery
+       * forwards preserve the server's tested direct-handler contract.
        */
       if (!(err instanceof McpError)) throw err;
       const reason = err.data?.reason;
-      if (
-        reason === 'invalid_endpoint' ||
-        reason === 'invalid_field' ||
-        reason === 'invalid_filter' ||
-        reason === 'page_out_of_range'
-      ) {
-        throw ctx.fail(
-          reason,
-          err.message,
-          { endpoint: input.endpoint, ...ctx.recoveryFor(reason) },
-          { cause: err },
-        );
+      const data = { endpoint: input.endpoint };
+      const cause = { cause: err };
+      switch (reason) {
+        case 'invalid_endpoint':
+          throw ctx.fail(
+            'invalid_endpoint',
+            err.message,
+            { ...data, ...ctx.recoveryFor('invalid_endpoint') },
+            cause,
+          );
+        case 'invalid_field':
+          throw ctx.fail(
+            'invalid_field',
+            err.message,
+            { ...data, ...ctx.recoveryFor('invalid_field') },
+            cause,
+          );
+        case 'invalid_filter':
+          throw ctx.fail(
+            'invalid_filter',
+            err.message,
+            { ...data, ...ctx.recoveryFor('invalid_filter') },
+            cause,
+          );
+        case 'page_out_of_range':
+          throw ctx.fail(
+            'page_out_of_range',
+            err.message,
+            { ...data, ...ctx.recoveryFor('page_out_of_range') },
+            cause,
+          );
       }
       throw err;
     }

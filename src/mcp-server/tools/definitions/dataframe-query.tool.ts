@@ -151,9 +151,7 @@ export const dataframeQueryTool = tool('treasury_dataframe_query', {
   async handler(input, ctx) {
     const bridge = getCanvasBridge();
     if (!bridge) {
-      throw ctx.fail('canvas_unavailable', 'DataCanvas is not configured on this server.', {
-        ...ctx.recoveryFor('canvas_unavailable'),
-      });
+      throw ctx.fail('canvas_unavailable', 'DataCanvas is not configured on this server.');
     }
 
     let queryOutput: Awaited<ReturnType<typeof bridge.query>>;
@@ -168,10 +166,9 @@ export const dataframeQueryTool = tool('treasury_dataframe_query', {
     } catch (err) {
       /**
        * Surface gate violations — from this server's bridge and from the
-       * framework canvas layer — as typed contract reasons. ctx.fail builds the
-       * wire error from exactly the data argument given, so each branch forwards
-       * the contract's recovery hint explicitly — the caught error's own data
-       * does not carry over.
+       * framework canvas layer — as typed contract reasons. Explicit recovery
+       * forwards preserve the direct-handler contract tested by this server;
+       * the framework also fills absent hints at the response boundary.
        */
       if (!(err instanceof McpError)) throw err;
       const reason = err.data?.reason;

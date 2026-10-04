@@ -286,7 +286,7 @@ export const getExchangeRatesTool = tool('treasury_get_exchange_rates', {
       throw ctx.fail(
         'country_not_found',
         `No exchange rate records found for: ${countries.join(', ')}. Country names must match exactly.`,
-        { countries, ...ctx.recoveryFor('country_not_found') },
+        { countries },
       );
     }
 
