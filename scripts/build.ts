@@ -2,14 +2,15 @@
  * @fileoverview Build script with progress feedback and output stats.
  * @module scripts/build
  *
- * Wraps tsc + tsc-alias with timing, file counts, and size reporting.
+ * Type-checks and emits declarations with tsc, then bundles server code with Bun.
+ * Packages stay external so the framework and native DuckDB bindings load normally.
  * Exits non-zero on failure with captured compiler output.
  *
  * @example
  * // Standard build:
  * // bun run scripts/build.ts
  *
- * // With a specific tsconfig:
+ * // With a specific declaration/type-check tsconfig (Bun uses tsconfig.json):
  * // bun run scripts/build.ts --project tsconfig.custom.json
  */
 
@@ -125,16 +126,28 @@ async function main() {
 
   const totalStart = performance.now();
 
-  // Step 1: tsc
-  const tsc = await exec([join(ROOT_DIR, 'node_modules', '.bin', 'tsc'), '-p', project], 'tsc');
+  // Type errors must stop the build before executable output is produced.
+  const tsc = await exec(
+    [join(ROOT_DIR, 'node_modules', '.bin', 'tsc'), '-p', project, '--emitDeclarationOnly'],
+    'tsc declarations',
+  );
   if (!tsc.ok) process.exit(1);
 
-  // Step 2: tsc-alias
-  const alias = await exec(
-    [join(ROOT_DIR, 'node_modules', '.bin', 'tsc-alias'), '-p', project],
-    'tsc-alias',
+  const bundle = await exec(
+    [
+      'bun',
+      'build',
+      './src/index.ts',
+      '--target=node',
+      '--format=esm',
+      '--packages=external',
+      '--sourcemap=linked',
+      '--outdir',
+      DIST_DIR,
+    ],
+    'bun build',
   );
-  if (!alias.ok) process.exit(1);
+  if (!bundle.ok) process.exit(1);
 
   const totalMs = Math.round(performance.now() - totalStart);
 
