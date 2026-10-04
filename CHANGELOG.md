@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.2.0](changelog/0.2.x/0.2.0.md) — 2026-10-03
+
+Opt-in cleanup for staged Treasury dataframes, with normalized environment settings and refreshed runtime and build dependencies.
+
 ## [0.1.11](changelog/0.1.x/0.1.11.md) — 2026-09-20 · 🛡️ Security
 
 mcp-ts-core moves to ^0.13.6 — the skill tree relocates to framework-skills/, the server declares a stateless session mode explicitly, and the one CodeQL workflow ships. treasury_dataframe_query's Markdown formatter now escapes backslashes ahead of pipes, closing a CodeQL incomplete-sanitization finding.
