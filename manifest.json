@@ -19,8 +19,7 @@
         "MCP_TRANSPORT_TYPE": "stdio",
         "MCP_AUTH_MODE": "none",
         "NODE_ENV": "production",
-        "CANVAS_PROVIDER_TYPE": "${user_config.canvas_provider_type}",
-        "TREASURY_DATAFRAME_DROP_ENABLED": "${user_config.dataframe_drop_enabled}"
+        "CANVAS_PROVIDER_TYPE": "none"
       }
     }
   },
@@ -28,19 +27,5 @@
     "runtimes": { "node": ">=24.0.0" }
   },
   "tools_generated": true,
-  "prompts_generated": true,
-  "user_config": {
-    "dataframe_drop_enabled": {
-      "title": "Enable Dataframe Drop",
-      "type": "boolean",
-      "default": false,
-      "description": "Enable treasury_dataframe_drop to delete staged dataframes. Requires the duckdb canvas provider."
-    },
-    "canvas_provider_type": {
-      "title": "Canvas Provider Type",
-      "type": "string",
-      "default": "duckdb",
-      "description": "Canvas engine for DataCanvas SQL tools. 'duckdb' enables treasury_dataframe_* tools; 'none' disables them."
-    }
-  }
+  "prompts_generated": true
 }
