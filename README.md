@@ -7,7 +7,7 @@
 
 <div align="center">
 
-[![Version](https://img.shields.io/badge/Version-0.2.0-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/treasury-fiscaldata-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^2.2.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/treasury-fiscaldata-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/treasury-fiscaldata-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.4.2-blueviolet.svg?style=flat-square)](https://bun.sh/)
+[![Version](https://img.shields.io/badge/Version-0.2.0-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/treasury-fiscaldata-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^2.3.1-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/treasury-fiscaldata-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/treasury-fiscaldata-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.4.4-blueviolet.svg?style=flat-square)](https://bun.sh/)
 
 </div>
 
@@ -29,7 +29,7 @@
 
 ## Overview
 
-US Treasury Fiscal Data — national debt, interest rates, exchange rates, and other fiscal datasets. Browse a curated catalog of 17 endpoints, query any endpoint directly, or stage large pulls as DuckDB dataframes for SQL analysis, from any MCP client. Runs as a stdio process, a local Streamable HTTP server, or the public hosted endpoint above.
+US Treasury Fiscal Data: the national debt, interest rates, exchange rates, and other federal fiscal datasets. Pull the headline numbers in one call, query any Fiscal Data endpoint directly, and run SQL over large pulls.
 
 ### Tools
 
@@ -131,18 +131,42 @@ Agent-friendly output:
 
 ### Public Hosted Instance
 
-A public instance is available at `https://treasury-fiscaldata.caseyjhand.com/mcp` — no installation required. Point any MCP client at it via Streamable HTTP:
+A public instance is available at `https://treasury-fiscaldata.caseyjhand.com/mcp` — no installation required. It serves Streamable HTTP; each client takes its own config shape.
+
+For Claude Code:
+
+```sh
+claude mcp add --transport http treasury-fiscaldata-mcp-server https://treasury-fiscaldata.caseyjhand.com/mcp
+```
+
+For Cline (`cline_mcp_settings.json`):
 
 ```json
 {
   "mcpServers": {
     "treasury-fiscaldata-mcp-server": {
-      "type": "streamable-http",
+      "type": "streamableHttp",
       "url": "https://treasury-fiscaldata.caseyjhand.com/mcp"
     }
   }
 }
 ```
+
+For Cursor (`mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "treasury-fiscaldata-mcp-server": {
+      "url": "https://treasury-fiscaldata.caseyjhand.com/mcp"
+    }
+  }
+}
+```
+
+Claude Desktop adds remote servers under Settings → Connectors.
+
+The Claude Desktop `.mcpb` download supports Treasury API queries with DataCanvas disabled. Its portable bundle omits DuckDB's platform-specific native bindings. Use the hosted endpoint, npm, or Docker for dataframe staging and SQL.
 
 ### Self-Hosted / Local
 
@@ -211,7 +235,7 @@ MCP_TRANSPORT_TYPE=http MCP_HTTP_PORT=3010 bun run start:http
 
 For large time-series pulls or multi-dataset analysis, use the DataCanvas SQL workflow:
 
-1. **Set `CANVAS_PROVIDER_TYPE=duckdb`** in your server environment.
+1. **Use the hosted endpoint, npm, or Docker.** DataCanvas is enabled by default; `CANVAS_PROVIDER_TYPE=none` disables it. The desktop `.mcpb` bundle does not include DataCanvas.
 2. **Call a data tool with a `canvas_id`** — e.g., `treasury_get_debt` with `mode=series` and a `canvas_id` value, or `treasury_query_dataset` with `canvas_id`. The tool registers the results as a `df_XXXXX_XXXXX` dataframe and returns the table name.
 3. **Inspect the schema** with `treasury_dataframe_describe` — lists column names, types (all VARCHAR for Treasury data), row count, and TTL.
 4. **Query with SQL** via `treasury_dataframe_query` — standard DuckDB SELECT with joins, aggregates, window functions, and CTEs. CAST VARCHAR columns to DECIMAL or DATE for arithmetic.
@@ -230,7 +254,7 @@ ORDER BY record_date DESC
 
 - [Bun v1.4.0](https://bun.sh/) or higher (or Node.js v24+).
 - No API key required — the US Treasury Fiscal Data API is free and public.
-- For DataCanvas SQL: `CANVAS_PROVIDER_TYPE=duckdb` (DuckDB is bundled as `@duckdb/node-api`).
+- DataCanvas SQL is enabled by default in npm and Docker installs, which include `@duckdb/node-api` and its native bindings. The portable desktop `.mcpb` bundle disables it.
 
 ### Installation
 
@@ -256,14 +280,14 @@ bun install
 
 ```sh
 cp .env.example .env
-# edit .env as needed — no required vars; CANVAS_PROVIDER_TYPE=duckdb to enable SQL
+# edit .env as needed — no required vars; CANVAS_PROVIDER_TYPE=none disables SQL
 ```
 
 ## Configuration
 
 | Variable | Description | Default |
 |:---------|:------------|:--------|
-| `CANVAS_PROVIDER_TYPE` | Set to `duckdb` for dataframe describe/query and for drop when enabled. With `none`, callable canvas tools return `canvas_unavailable`; drop stays off the tool list unless separately enabled. | `none` |
+| `CANVAS_PROVIDER_TYPE` | `duckdb` backs dataframe describe/query, and drop when enabled. With `none`, callable canvas tools return `canvas_unavailable`; drop stays off the tool list unless separately enabled. | `duckdb` (`none` in the desktop bundle) |
 | `CANVAS_TTL_MS` | Per-table TTL for DataCanvas dataframes in milliseconds. | `86400000` (24h) |
 | `TREASURY_DATAFRAME_DROP_ENABLED` | Register `treasury_dataframe_drop` as callable. Also requires `CANVAS_PROVIDER_TYPE=duckdb`. | `false` |
 | `MCP_TRANSPORT_TYPE` | Transport: `stdio` or `http`. | `stdio` |

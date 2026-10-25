@@ -56,7 +56,7 @@ This server wraps that API for LLM access: convenience tools for the three headl
 
 | Env Var | Required | Description |
 |:--------|:---------|:------------|
-| `CANVAS_PROVIDER_TYPE` | No | Set to `duckdb` to enable DataCanvas for large time-series results. Unset resolves to `none`: the data tools still answer, capped and with an enrichment notice saying the rows could not be staged and naming the variable, and `treasury_dataframe_describe` / `treasury_dataframe_query` fail closed with `canvas_unavailable` naming it too. |
+| `CANVAS_PROVIDER_TYPE` | No | DataCanvas for large time-series results; defaults to `duckdb`. With `none`, the data tools still answer, capped and with an enrichment notice saying the rows could not be staged and naming the variable, and `treasury_dataframe_describe` / `treasury_dataframe_query` fail closed with `canvas_unavailable` naming it too. |
 | `CANVAS_TTL_MS` | No | Override DataCanvas default TTL (24h). |
 
 No API key env var — the API is fully keyless.

@@ -1,7 +1,7 @@
 cff-version: 1.2.0
 message: "If you use this software, please cite it as below."
 title: treasury-fiscaldata-mcp-server
-abstract: "MCP server for US Treasury Fiscal Data — national debt, interest rates, exchange rates, and federal revenue/spending."
+abstract: "MCP server for US Treasury Fiscal Data: national debt, interest rates, exchange rates, and federal revenue/spending."
 type: software
 authors:
   - family-names: Hand
