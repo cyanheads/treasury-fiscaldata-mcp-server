@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.3.0](changelog/0.3.x/0.3.0.md) — 2026-10-25 · ⚠️ Breaking
+
+Default-on DataCanvas for npm and Docker, portable desktop packaging, and framework validation updates.
+
 ## [0.2.0](changelog/0.2.x/0.2.0.md) — 2026-10-03
 
 Opt-in cleanup for staged Treasury dataframes, with normalized environment settings and refreshed runtime and build dependencies.
