@@ -53,7 +53,7 @@ export class FiscalDataService {
     } = {},
   ): Promise<FiscalDataEnvelope> {
     const url = this.buildUrl(endpoint, options);
-    ctx.log.debug('Fetching Fiscal Data', { url });
+    ctx.log.debug('Fetching Fiscal Data', { endpoint });
 
     return await withRetry(
       async () => {
