@@ -312,8 +312,8 @@ export const getInterestRatesTool = tool('treasury_get_interest_rates', {
     /**
      * The cap is unconditional, so the disclosure keys on the arithmetic rather
      * than on a canvas being present: the inline array is short whenever fewer
-     * rows come back than were retrieved, and a default install — where
-     * CANVAS_PROVIDER_TYPE is unset and nothing absorbs the remainder — is
+     * rows come back than were retrieved, and an install where
+     * CANVAS_PROVIDER_TYPE=none and nothing absorbs the remainder is
      * exactly the case that needs saying so.
      *
      * A month is bounded (17 rows at its widest), so mode=latest returns whole.

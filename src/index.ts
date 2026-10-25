@@ -5,9 +5,10 @@
  */
 
 import { createApp } from '@cyanheads/mcp-ts-core';
+import { normalizeEnv } from '@cyanheads/mcp-ts-core/config';
+import { isErrorWithCode } from '@cyanheads/mcp-ts-core/utils';
 import { getServerConfig } from './config/server-config.js';
 import { dataframeDescribeTool } from './mcp-server/tools/definitions/dataframe-describe.tool.js';
-import { dataframeDropTool } from './mcp-server/tools/definitions/dataframe-drop.tool.js';
 import { dataframeQueryTool } from './mcp-server/tools/definitions/dataframe-query.tool.js';
 import { getDebtTool } from './mcp-server/tools/definitions/get-debt.tool.js';
 import { getExchangeRatesTool } from './mcp-server/tools/definitions/get-exchange-rates.tool.js';
@@ -16,6 +17,17 @@ import { listDatasetsTool } from './mcp-server/tools/definitions/list-datasets.t
 import { queryDatasetTool } from './mcp-server/tools/definitions/query-dataset.tool.js';
 import { initCanvasBridge } from './services/canvas-bridge/canvas-bridge.js';
 import { initFiscalDataService } from './services/fiscal-data/fiscal-data-service.js';
+
+// Load Node's .env before evaluating server defaults and the opt-in tool flag.
+try {
+  process.loadEnvFile();
+} catch (error) {
+  if (!isErrorWithCode(error) || error.code !== 'ENOENT') throw error;
+}
+// DataCanvas defaults on; set CANVAS_PROVIDER_TYPE=none to disable it.
+process.env.CANVAS_PROVIDER_TYPE = normalizeEnv(process.env).CANVAS_PROVIDER_TYPE ?? 'duckdb';
+// Evaluate the opt-in flag after .env is loaded on Node.
+const { dataframeDropTool } = await import('./mcp-server/tools/definitions/dataframe-drop.tool.js');
 
 /**
  * Server-level orientation, sent to clients on every `initialize`. One template

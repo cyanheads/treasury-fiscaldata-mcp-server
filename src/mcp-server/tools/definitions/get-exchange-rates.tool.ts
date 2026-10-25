@@ -378,8 +378,8 @@ export const getExchangeRatesTool = tool('treasury_get_exchange_rates', {
     /**
      * The cap is unconditional, so the preview disclosure keys on the
      * arithmetic rather than on a canvas being present: the inline array is
-     * short whenever fewer rows come back than were kept, and a default install
-     * — CANVAS_PROVIDER_TYPE unset, nothing absorbing the remainder — is exactly
+     * short whenever fewer rows come back than were kept, and an install with
+     * CANVAS_PROVIDER_TYPE=none, nothing absorbing the remainder, is exactly
      * the case that needs saying so.
      */
     const preview = input.mode === 'series' ? mapped.slice(0, SERIES_PREVIEW_LIMIT) : mapped;

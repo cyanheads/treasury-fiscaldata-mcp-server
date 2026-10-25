@@ -1,5 +1,5 @@
 # Build JavaScript on the native build host, never under QEMU.
-FROM --platform=$BUILDPLATFORM oven/bun:1.4.2 AS build
+FROM --platform=$BUILDPLATFORM oven/bun:1.4.4 AS build
 WORKDIR /usr/src/app
 COPY package.json bun.lock ./
 RUN --mount=type=cache,target=/root/.bun/install/cache \
@@ -8,7 +8,7 @@ COPY . .
 RUN bun run build
 
 # Cross-install target bindings while the security scanner runs natively.
-FROM --platform=$BUILDPLATFORM oven/bun:1.4.2 AS deps
+FROM --platform=$BUILDPLATFORM oven/bun:1.4.4 AS deps
 WORKDIR /usr/src/app
 COPY package.json bun.lock bunfig.toml ./
 COPY --from=build /usr/src/app/node_modules/@socketsecurity/bun-security-scanner ./node_modules/@socketsecurity/bun-security-scanner
@@ -33,12 +33,12 @@ RUN bun scripts/prune-musl-packages.ts
 RUN rm -rf node_modules/@socketsecurity/bun-security-scanner
 
 # The runtime contains target dependencies and platform-independent JavaScript.
-FROM oven/bun:1.4.2-slim AS production
+FROM oven/bun:1.4.4-slim AS production
 WORKDIR /usr/src/app
 ENV NODE_ENV=production
 ARG APP_VERSION
 LABEL org.opencontainers.image.title="@cyanheads/treasury-fiscaldata-mcp-server"
-LABEL org.opencontainers.image.description="MCP server for US Treasury Fiscal Data — national debt, interest rates, exchange rates, and federal revenue/spending."
+LABEL org.opencontainers.image.description="MCP server for US Treasury Fiscal Data: national debt, interest rates, exchange rates, and federal revenue/spending."
 LABEL org.opencontainers.image.source="https://github.com/cyanheads/treasury-fiscaldata-mcp-server"
 LABEL org.opencontainers.image.licenses="Apache-2.0"
 LABEL org.opencontainers.image.version="${APP_VERSION}"
@@ -46,6 +46,8 @@ COPY package.json ./
 COPY --from=deps /usr/src/app/node_modules ./node_modules
 COPY --from=build /usr/src/app/dist ./dist
 RUN mkdir -p /var/log/treasury-fiscaldata-mcp-server && chown -R bun:bun /var/log/treasury-fiscaldata-mcp-server
+RUN mkdir -p /usr/src/app/.cache /usr/src/app/.mirror \
+    && chown -R bun:bun /usr/src/app/.cache /usr/src/app/.mirror
 USER bun
 ARG PORT
 ENV MCP_HTTP_PORT=${PORT:-3010}
