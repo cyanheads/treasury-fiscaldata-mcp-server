@@ -57,6 +57,7 @@ await createApp({
   ],
   resources: [],
   prompts: [],
+  skills: 'skills',
   instructions: INSTRUCTIONS,
   /**
    * Every tool here answers from the Fiscal Data API or the tenant's canvas in

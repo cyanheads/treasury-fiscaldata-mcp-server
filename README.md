@@ -129,159 +129,32 @@ Agent-friendly output:
 
 ## Getting started
 
-### Public Hosted Instance
-
-A public instance is available at `https://treasury-fiscaldata.caseyjhand.com/mcp` — no installation required. It serves Streamable HTTP; each client takes its own config shape.
-
-For Claude Code:
+Connect Claude Code to the public instance:
 
 ```sh
 claude mcp add --transport http treasury-fiscaldata-mcp-server https://treasury-fiscaldata.caseyjhand.com/mcp
 ```
 
-For Cline (`cline_mcp_settings.json`):
+Or run it locally:
 
-```json
-{
-  "mcpServers": {
-    "treasury-fiscaldata-mcp-server": {
-      "type": "streamableHttp",
-      "url": "https://treasury-fiscaldata.caseyjhand.com/mcp"
-    }
-  }
-}
+```sh
+claude mcp add treasury-fiscaldata-mcp-server -- npx -y @cyanheads/treasury-fiscaldata-mcp-server
 ```
 
-For Cursor (`mcp.json`):
+For other MCP clients:
 
 ```json
 {
   "mcpServers": {
     "treasury-fiscaldata-mcp-server": {
-      "url": "https://treasury-fiscaldata.caseyjhand.com/mcp"
-    }
-  }
-}
-```
-
-Claude Desktop adds remote servers under Settings → Connectors.
-
-The Claude Desktop `.mcpb` download supports Treasury API queries with DataCanvas disabled. Its portable bundle omits DuckDB's platform-specific native bindings. Use the hosted endpoint, npm, or Docker for dataframe staging and SQL.
-
-### Self-Hosted / Local
-
-Add the following to your MCP client configuration file.
-
-```json
-{
-  "mcpServers": {
-    "treasury-fiscaldata-mcp-server": {
-      "type": "stdio",
-      "command": "bunx",
-      "args": ["@cyanheads/treasury-fiscaldata-mcp-server@latest"],
-      "env": {
-        "MCP_TRANSPORT_TYPE": "stdio",
-        "MCP_LOG_LEVEL": "info"
-      }
-    }
-  }
-}
-```
-
-Or with npx (no Bun required):
-
-```json
-{
-  "mcpServers": {
-    "treasury-fiscaldata-mcp-server": {
-      "type": "stdio",
       "command": "npx",
-      "args": ["-y", "@cyanheads/treasury-fiscaldata-mcp-server@latest"],
-      "env": {
-        "MCP_TRANSPORT_TYPE": "stdio",
-        "MCP_LOG_LEVEL": "info"
-      }
+      "args": ["-y", "@cyanheads/treasury-fiscaldata-mcp-server"]
     }
   }
 }
 ```
 
-Or with Docker:
-
-```json
-{
-  "mcpServers": {
-    "treasury-fiscaldata-mcp-server": {
-      "type": "stdio",
-      "command": "docker",
-      "args": [
-        "run", "-i", "--rm",
-        "-e", "MCP_TRANSPORT_TYPE=stdio",
-        "ghcr.io/cyanheads/treasury-fiscaldata-mcp-server:latest"
-      ]
-    }
-  }
-}
-```
-
-For Streamable HTTP, set the transport and start the server:
-
-```sh
-MCP_TRANSPORT_TYPE=http MCP_HTTP_PORT=3010 bun run start:http
-# Server listens at http://localhost:3010/mcp
-```
-
-### DataCanvas SQL workflow
-
-For large time-series pulls or multi-dataset analysis, use the DataCanvas SQL workflow:
-
-1. **Use the hosted endpoint, npm, or Docker.** DataCanvas is enabled by default; `CANVAS_PROVIDER_TYPE=none` disables it. The desktop `.mcpb` bundle does not include DataCanvas.
-2. **Call a data tool with a `canvas_id`** — e.g., `treasury_get_debt` with `mode=series` and a `canvas_id` value, or `treasury_query_dataset` with `canvas_id`. The tool registers the results as a `df_XXXXX_XXXXX` dataframe and returns the table name.
-3. **Inspect the schema** with `treasury_dataframe_describe` — lists column names, types (all VARCHAR for Treasury data), row count, and TTL.
-4. **Query with SQL** via `treasury_dataframe_query` — standard DuckDB SELECT with joins, aggregates, window functions, and CTEs. CAST VARCHAR columns to DECIMAL or DATE for arithmetic.
-
-```sql
--- Example: debt trend over the last year, month-end records only
-SELECT
-  record_date,
-  CAST(tot_pub_debt_out_amt AS DECIMAL) / 1e12 AS total_debt_trillions
-FROM df_xxxxx
-WHERE CAST(record_date AS DATE) >= CURRENT_DATE - INTERVAL 1 YEAR
-ORDER BY record_date DESC
-```
-
-### Prerequisites
-
-- [Bun v1.4.0](https://bun.sh/) or higher (or Node.js v24+).
-- No API key required — the US Treasury Fiscal Data API is free and public.
-- DataCanvas SQL is enabled by default in npm and Docker installs, which include `@duckdb/node-api` and its native bindings. The portable desktop `.mcpb` bundle disables it.
-
-### Installation
-
-1. **Clone the repository:**
-
-```sh
-git clone https://github.com/cyanheads/treasury-fiscaldata-mcp-server.git
-```
-
-2. **Navigate into the directory:**
-
-```sh
-cd treasury-fiscaldata-mcp-server
-```
-
-3. **Install dependencies:**
-
-```sh
-bun install
-```
-
-4. **Configure environment:**
-
-```sh
-cp .env.example .env
-# edit .env as needed — no required vars; CANVAS_PROVIDER_TYPE=none disables SQL
-```
+No API key is required. DataCanvas is enabled by default in npm and Docker installs; `CANVAS_PROVIDER_TYPE=none` disables it. The portable Claude Desktop `.mcpb` bundle omits DuckDB native bindings and supports Treasury API queries with DataCanvas disabled. For Docker or a source build, see [Running the server](#running-the-server).
 
 ## Configuration
 
@@ -307,6 +180,14 @@ See [`.env.example`](./.env.example) for the full list of optional overrides.
 ## Running the server
 
 ### Local development
+
+Requires [Bun v1.4.0](https://bun.sh/) or higher to build; the installed server also runs on Node.js v24+.
+
+```sh
+git clone https://github.com/cyanheads/treasury-fiscaldata-mcp-server.git
+cd treasury-fiscaldata-mcp-server && bun install
+cp .env.example .env
+```
 
 - **Build and run:**
 
@@ -335,11 +216,16 @@ See [`.env.example`](./.env.example) for the full list of optional overrides.
 ### Docker
 
 ```sh
-docker build -t treasury-fiscaldata-mcp-server .
-docker run --rm -e CANVAS_PROVIDER_TYPE=duckdb -p 3010:3010 treasury-fiscaldata-mcp-server
+docker run --rm -p 3010:3010 ghcr.io/cyanheads/treasury-fiscaldata-mcp-server:latest
 ```
 
 The Dockerfile defaults to HTTP transport, stateless session mode, and logs to `/var/log/treasury-fiscaldata-mcp-server`. A native build-host dependency stage cross-installs DuckDB bindings for the target architecture, preserves the release-age and security checks, and removes unused musl bindings. OpenTelemetry peers are installed at the framework's declared ranges — build with `--build-arg OTEL_ENABLED=false` to omit them.
+
+To build locally, run `docker build -t treasury-fiscaldata-mcp-server .`. For stdio, use `docker run -i --rm -e MCP_TRANSPORT_TYPE=stdio ghcr.io/cyanheads/treasury-fiscaldata-mcp-server:latest` as the MCP client's launch command.
+
+### DataCanvas SQL workflow
+
+Use the hosted endpoint, npm, or Docker for dataframe staging and SQL. Pass `canvas_id` to a data tool to stage its results, then use the returned minted `df_<id>` table identifier with `treasury_dataframe_describe` and `treasury_dataframe_query`. Treasury columns are VARCHAR: cast numeric and date columns before arithmetic, comparisons, or date operations. The input `canvas_id` enables staging; it does not name the output table.
 
 ## Project structure
 

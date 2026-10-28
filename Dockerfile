@@ -5,6 +5,7 @@ COPY package.json bun.lock ./
 RUN --mount=type=cache,target=/root/.bun/install/cache \
     bun install --frozen-lockfile --ignore-scripts
 COPY . .
+RUN mkdir -p skills
 RUN bun run build
 
 # Cross-install target bindings while the security scanner runs natively.
@@ -45,6 +46,7 @@ LABEL org.opencontainers.image.version="${APP_VERSION}"
 COPY package.json ./
 COPY --from=deps /usr/src/app/node_modules ./node_modules
 COPY --from=build /usr/src/app/dist ./dist
+COPY --from=build /usr/src/app/skills ./skills
 RUN mkdir -p /var/log/treasury-fiscaldata-mcp-server && chown -R bun:bun /var/log/treasury-fiscaldata-mcp-server
 RUN mkdir -p /usr/src/app/.cache /usr/src/app/.mirror \
     && chown -R bun:bun /usr/src/app/.cache /usr/src/app/.mirror
