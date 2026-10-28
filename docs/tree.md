@@ -1,6 +1,6 @@
 # treasury-fiscaldata-mcp-server - Directory Structure
 
-Generated on: 2026-10-25 10:08:09
+Generated on: 2026-10-28 12:58:49
 
 ```text
 treasury-fiscaldata-mcp-server/
@@ -27,6 +27,7 @@ treasury-fiscaldata-mcp-server/
 │   ├── 0.1.x/
 │   ├── 0.2.x/
 │   ├── 0.3.x/
+│   ├── 0.4.x/
 │   └── template.md
 ├── docs/
 │   ├── design.md
@@ -39,6 +40,8 @@ treasury-fiscaldata-mcp-server/
 │   ├── add-resource/
 │   │   └── SKILL.md
 │   ├── add-service/
+│   │   └── SKILL.md
+│   ├── add-skill/
 │   │   └── SKILL.md
 │   ├── add-test/
 │   │   └── SKILL.md
@@ -137,6 +140,11 @@ treasury-fiscaldata-mcp-server/
 │   ├── release-github.ts
 │   ├── tree.ts
 │   └── verify-catalog.ts
+├── skills/
+│   └── treasury-fiscaldata-guide/
+│       ├── references/
+│       │   └── sql-analysis.md
+│       └── SKILL.md
 ├── src/
 │   ├── config/
 │   │   └── server-config.ts
@@ -175,6 +183,7 @@ treasury-fiscaldata-mcp-server/
 │   ├── resources/
 │   ├── scripts/
 │   │   ├── build.test.ts
+│   │   ├── clean-mcpb.test.ts
 │   │   ├── dependency-check.test.ts
 │   │   ├── lint-packaging.test.ts
 │   │   └── verify-catalog.test.ts
@@ -207,7 +216,9 @@ treasury-fiscaldata-mcp-server/
 ├── knip.jsonc
 ├── LICENSE
 ├── manifest.json
+├── mcp.json
 ├── package.json
+├── plugin.json
 ├── README.md
 ├── server.json
 ├── tsconfig.build.json

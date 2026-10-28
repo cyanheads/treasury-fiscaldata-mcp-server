@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.4.0](changelog/0.4.x/0.4.0.md) — 2026-10-28
+
+Treasury fiscal-analysis guidance served over MCP and shipped in installable packages, with mcp-ts-core 0.13.18 and DuckDB 2.
+
 ## [0.3.0](changelog/0.3.x/0.3.0.md) — 2026-10-25 · ⚠️ Breaking
 
 Default-on DataCanvas for npm and Docker, portable desktop packaging, and framework validation updates.
