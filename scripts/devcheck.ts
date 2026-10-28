@@ -768,10 +768,13 @@ const ALL_CHECKS: Check[] = [
         '.claude-plugin/plugin.json',
         '.codex-plugin/plugin.json',
         '.codex-plugin/mcp.json',
+        'plugin.json',
+        'mcp.json',
         '.mcpbignore',
         'README.md',
         'Dockerfile',
         'server.json',
+        'skills',
       ];
       if (!inputs.some((input) => existsSync(path.join(ROOT_DIR, input)))) return null;
       return ['bun', 'run', 'scripts/lint-packaging.ts'];

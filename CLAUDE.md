@@ -2,9 +2,9 @@
 
 **Server:** @cyanheads/treasury-fiscaldata-mcp-server
 **Version:** 0.3.0
-**Framework:** [@cyanheads/mcp-ts-core](https://www.npmjs.com/package/@cyanheads/mcp-ts-core) `^0.13.16`
+**Framework:** [@cyanheads/mcp-ts-core](https://www.npmjs.com/package/@cyanheads/mcp-ts-core) `^0.13.18`
 **Engines:** Bun ≥1.4.0, Node ≥24.0.0
-**MCP SDK:** `@modelcontextprotocol/server` ^2.3.1 (declare `@modelcontextprotocol/client` explicitly for client-side test code)
+**MCP SDK:** `@modelcontextprotocol/server` ^2.4.0 (declare `@modelcontextprotocol/client` explicitly for client-side test code)
 **Zod:** ^4.6.7
 
 > **Read the framework docs first:** `node_modules/@cyanheads/mcp-ts-core/CLAUDE.md` contains the full API reference — builders, Context, error codes, exports, patterns. This file covers server-specific conventions only.
@@ -241,6 +241,8 @@ src/
 
 Skills are modular instructions in `framework-skills/` at the project root. Read them directly when a task matches — e.g., `framework-skills/add-tool/SKILL.md` when adding a tool. `bun run list-skills` prints the full registry. The directory is deliberately not `skills/`: Claude Code and Codex auto-load a plugin's root `skills/`, so a server that ships `.claude-plugin/` or `.codex-plugin/` would hand these development skills to every agent that installs it. Keep `skills/` free for skills meant for those agents.
 
+Published skills in root `skills/` reach plugin installs, npm packages, Docker images, and MCPB bundles. Serve them over MCP with `createApp({ skills: 'skills' })`; `lint:packaging` validates the tree. Framework maintenance never authors or copies this tree.
+
 **Agent skill directory:** Copy skills into the directory your agent discovers (Claude Code: `.claude/skills/`, others: equivalent). Skills then load as context without referencing `framework-skills/` paths. After framework updates, run the `maintenance` skill — Phase B re-syncs the agent directory.
 
 Available skills:
@@ -250,6 +252,7 @@ Available skills:
 | `setup` | Post-init project orientation |
 | `design-mcp-server` | Design tool surface, resources, and services for a new server |
 | `add-tool` | Scaffold a new tool definition |
+| `add-skill` | Author agent-facing skills in root `skills/` and serve them over MCP |
 | `add-app-tool` | Scaffold an MCP App tool + paired UI resource |
 | `add-resource` | Scaffold a new resource definition |
 | `add-prompt` | Scaffold a new prompt definition |
@@ -299,7 +302,7 @@ When you complete a skill's checklist, check the boxes and add a completion time
 | `bun run audit:refresh` | Delete `bun.lock`, reinstall, and re-run `bun audit`. Last resort after `audit:fix`, `bun update <name>`, and `bun dedupe` — it re-resolves every ranged dep, the framework pin included. |
 | `bun run lint:mcp` | Run the MCP definition linter standalone (rule catalog: `api-linter` skill) |
 | `bun run lint:deps` | Knip checks unused and missing dependencies across source, scripts, and tests |
-| `bun run lint:packaging` | Packaging surface checks — `server.json`/`manifest.json` env-var parity (run by devcheck) |
+| `bun run lint:packaging` | Packaging checks — env-var parity, anchored MCPB exclusions, plugin manifests, and published skills (run by devcheck) |
 | `bun run verify:catalog` | Probe every `datasets.ts` entry against the live Fiscal Data API — fails on a path that does not answer or a field the endpoint does not have. Needs the network, so it is not in `devcheck` or the test suite; run it after touching the catalog and before a release |
 | `bun run list-skills` | Print the skill registry |
 | `bun run tree` | Generate directory structure doc |
@@ -322,7 +325,11 @@ Preserve these project-specific changes when syncing framework scripts: `scripts
 
 `scripts/devcheck.ts` runs `bun run lint:deps` in its dependency check. `knip.jsonc` covers every source, script, and test file, including disconnected modules; documented exceptions cover dynamic logging, tooling, the separately installed registry CLI, and the framework linter's source fallback. Do not restore `tsc-alias` or `depcheck`: both dependency trees include unpatched `braces`.
 
+`scripts/lint-packaging.ts` preserves the registry description parity check and loads the installed framework's skill validator directly; the framework-repository source fallback does not exist in this server. Its agent-document matcher and `scripts/clean-mcpb.ts` preserve `dist/ext/skills/`, which is executable MCP SDK code, while stripping dependency development skills.
+
 ## Bundling
+
+`mcpb pack` reads `.mcpbignore`, not `.gitignore`. Root development paths require root-anchored patterns (`/docs/`, never `docs/`); published root `skills/` ships. The cleaner removes dependency agent documentation, platform-native DuckDB bindings, node-gyp generator output, and build-only framework files while preserving compiled runtime modules.
 
 `bun run bundle` produces a `.mcpb` extension bundle for one-click install in Claude Desktop. `scripts/clean-mcpb.ts` then strips dependency-shipped agent docs and `@duckdb/node-bindings-*` platform slices, keeping the bundle portable and under the 25 MB registry cap. MCPB is stdio-only — HTTP and Cloudflare Workers deployments are unaffected. Consumers who don't need it can delete `manifest.json` and `.mcpbignore`; `lint:packaging` skips cleanly.
 
