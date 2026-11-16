@@ -3,9 +3,17 @@
  * @module tests/tools/dataframe-query.tool.test
  */
 
+import { tmpdir } from 'node:os';
+import { CanvasRegistry, DataCanvas, DuckdbProvider } from '@cyanheads/mcp-ts-core/canvas';
 import { JsonRpcErrorCode, notFound, validationError } from '@cyanheads/mcp-ts-core/errors';
-import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
-import { describe, expect, it, vi } from 'vitest';
+import { createMockContext, getEnrichment, runToolContract } from '@cyanheads/mcp-ts-core/testing';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import {
+  contentText,
+  HOSTILE_VALUE,
+  readParagraphs,
+  readTables,
+} from '../helpers/markdown-read-back.js';
 
 vi.mock('@/services/canvas-bridge/canvas-bridge.js', () => ({
   getCanvasBridge: vi.fn(),
@@ -49,6 +57,11 @@ function resolveWith(queryResult: ReturnType<typeof makeQueryResult>) {
   } as unknown as ReturnType<typeof getCanvasBridge>);
 }
 
+/** The declared hint for a reason — the contract is the source of truth. */
+function declaredRecovery(reason: string): string | undefined {
+  return dataframeQueryTool.errors?.find((entry) => entry.reason === reason)?.recovery;
+}
+
 describe('dataframeQueryTool', () => {
   it('throws canvas_unavailable when bridge is not configured', async () => {
     vi.mocked(getCanvasBridge).mockReturnValue(undefined);
@@ -73,15 +86,16 @@ describe('dataframeQueryTool', () => {
       sql: 'SELECT * FROM information_schema.tables',
     });
     await expect(dataframeQueryTool.handler(input, ctx)).rejects.toMatchObject({
+      code: JsonRpcErrorCode.ValidationError,
       data: { reason: 'system_catalog_access' },
     });
   });
 
   it('throws invalid_sql when SQL is not a SELECT (framework gate reason)', async () => {
     rejectWith(
-      validationError('Canvas query must be SELECT; got INSERT.', {
+      validationError('Canvas query must be SELECT.', {
         reason: 'non_select_statement',
-        statementType: 'INSERT',
+        statementType: 'UNKNOWN',
       }),
     );
 
@@ -188,11 +202,6 @@ describe('dataframeQueryTool', () => {
   });
 
   describe('rerouted canvas errors', () => {
-    /** The declared hint for a reason — the contract is the source of truth. */
-    function declaredRecovery(reason: string): string | undefined {
-      return dataframeQueryTool.errors?.find((entry) => entry.reason === reason)?.recovery;
-    }
-
     it('carries the declared recovery hint for system_catalog_access', async () => {
       rejectWith(
         validationError('SQL references a denied system catalog: information_schema.', {
@@ -213,8 +222,36 @@ describe('dataframeQueryTool', () => {
       });
     });
 
+    /**
+     * The bridge refuses a register_as name spelled like a DuckDB metadata view
+     * before anything is staged, under the same reason as catalog-reading SQL.
+     * Its own hint — choose another name — is the remedy; the contract's, which
+     * points at the SQL, is not.
+     */
+    it('carries the bridge hint for a refused register_as name on both surfaces', async () => {
+      const { CanvasBridge } = await vi.importActual<
+        typeof import('@/services/canvas-bridge/canvas-bridge.js')
+      >('@/services/canvas-bridge/canvas-bridge.js');
+      const bridge = new CanvasBridge({} as unknown as DataCanvas);
+      vi.mocked(getCanvasBridge).mockReturnValue(bridge);
+      const input = { sql: 'SELECT record_date FROM df_ABCDE_FGHIJ', register_as: 'pg_tables' };
+      const refusal = (await bridge
+        .query(createMockContext(), input.sql, { registerAs: input.register_as })
+        .catch((err: unknown) => err)) as { data: { recovery: { hint: string } } };
+      const hint = refusal.data.recovery.hint;
+
+      const result = await runToolContract(dataframeQueryTool, input);
+
+      expect(hint).toContain('register_as');
+      expect(result.isError).toBe(true);
+      expect(result.structuredContent).toMatchObject({
+        error: { data: { reason: 'system_catalog_access', recovery: { hint } } },
+      });
+      expect(readParagraphs(contentText(result.content))).toContain(`Recovery: ${hint}`);
+    });
+
     it.each([
-      ['non_select_statement', 'Canvas query must be SELECT; got INSERT.'],
+      ['non_select_statement', 'Canvas query must be SELECT.'],
       ['multi_statement', 'Canvas query must be a single statement.'],
       ['denied_function', 'Canvas query references disallowed table function: read_csv.'],
       ['identifier_shape', 'Canvas identifier has an unsupported shape.'],
@@ -238,7 +275,7 @@ describe('dataframeQueryTool', () => {
     });
 
     it('chains the originating canvas error as the cause', async () => {
-      const original = validationError('Canvas query must be SELECT; got INSERT.', {
+      const original = validationError('Canvas query must be SELECT.', {
         reason: 'non_select_statement',
       });
       rejectWith(original);
@@ -307,6 +344,17 @@ describe('dataframeQueryTool', () => {
       expect(error.message).not.toContain('describe()');
     });
 
+    it('re-stages through the convenience tools only in the mode that stages', () => {
+      /**
+       * treasury_get_debt, treasury_get_interest_rates, and
+       * treasury_get_exchange_rates stage a table only in mode=series; passing
+       * canvas_id to any other mode stages nothing, so the hint has to say so.
+       */
+      expect(declaredRecovery('missing_table')).toContain(
+        'treasury_get_debt, treasury_get_interest_rates, or treasury_get_exchange_rates with mode=series',
+      );
+    });
+
     it('chains the originating missing-table error as the cause', async () => {
       const original = missingTableError();
       rejectWith(original);
@@ -336,14 +384,39 @@ describe('dataframeQueryTool', () => {
       const error = (await Promise.resolve(dataframeQueryTool.handler(input, ctx)).catch(
         (err: unknown) => err,
       )) as {
+        code: number;
         message: string;
         data: { reason?: string; recovery?: { hint?: string } };
       };
 
+      expect(error.code).toBe(JsonRpcErrorCode.ValidationError);
       expect(error.data.reason).toBe('invalid_query_bounds');
-      expect(error.message).toContain('row_limit');
-      expect(error.message).not.toContain('rowLimit');
+      expect(error.message).toBe('preview (2000) may not exceed row_limit (1000).');
       expect(String(error.data.recovery?.hint)).toBe(declaredRecovery('invalid_query_bounds'));
+    });
+
+    it('restates a row_limit over the canvas ceiling in this tool parameter names', async () => {
+      rejectWith(
+        validationError('rowLimit must be a positive safe integer no greater than 1000.', {
+          reason: 'invalid_query_bounds',
+          field: 'rowLimit',
+        }),
+      );
+
+      const ctx = createMockContext({ tenantId: 'test-tenant', errors: dataframeQueryTool.errors });
+      const input = dataframeQueryTool.input.parse({
+        sql: 'SELECT * FROM df_ABCDE_FGHIJ',
+        row_limit: 5000,
+      });
+
+      await expect(dataframeQueryTool.handler(input, ctx)).rejects.toMatchObject({
+        code: JsonRpcErrorCode.ValidationError,
+        message: 'row_limit (5000) exceeds the row ceiling this server allows.',
+        data: {
+          reason: 'invalid_query_bounds',
+          recovery: { hint: declaredRecovery('invalid_query_bounds') },
+        },
+      });
     });
   });
 
@@ -579,77 +652,145 @@ describe('dataframeQueryTool', () => {
   });
 
   /**
-   * A Treasury column is VARCHAR and carries whatever upstream published, so a
-   * cell can hold a backslash. Escaping `|` alone leaves those backslashes to be
-   * read as escapes by the client's renderer, which consumes them — the value
-   * the agent reads in `content[]` is then not the value in the dataframe.
+   * `content[]` is read through a real Markdown parse and compared with the
+   * values `structuredContent` carries — a client renders the text, so the
+   * rendered value is the one that has to match.
    */
-  describe('markdown cell escaping', () => {
-    /**
-     * Markdown's backslash-escape rule: a backslash before ASCII punctuation is
-     * consumed and the punctuation emitted literally. This is what a client does
-     * to `content[]`, so the rendered text — not the escaped source — is the
-     * surface a cell value has to survive.
-     */
-    function renderMarkdown(cell: string): string {
-      return cell.replace(/\\([!-/:-@[-`{-~])/g, '$1');
-    }
-
-    /** The single data cell of a one-column, one-row rendered table. */
-    function renderedCell(value: unknown): string {
-      const text = (
+  describe('content[] read-back', () => {
+    function render(columns: string[], rows: Record<string, unknown>[]): string {
+      return contentText(
         dataframeQueryTool.format!({
-          columns: ['v'],
-          row_count: 1,
+          columns,
+          row_count: rows.length,
           row_count_capped: false,
-          rows: [{ v: value }],
-        })[0] as { text: string }
-      ).text;
-      const row = text.split('\n').at(-1) ?? '';
-      return row.replace(/^\| /, '').replace(/ \|$/, '');
+          rows,
+        }),
+      );
     }
 
-    /**
-     * Every `|` left unescaped splits the row into another cell, so the column
-     * count stops matching the header. Dropping the escape pairs first is what
-     * separates a real separator from an escaped one.
-     */
-    function hasUnescapedPipe(cell: string): boolean {
-      return cell.replace(/\\[\s\S]/g, '').includes('|');
-    }
+    it('reads the column names back as the header and every cell as the row value', () => {
+      const columns = ['record_date', 'debt', 'n', 'meta'];
+      const rows = [
+        { record_date: '2026-05-28', debt: '39180000000000.00', n: 3, meta: { a: 1 } },
+        { record_date: '2026-05-27', debt: null, n: 2.5, meta: [1, 2] },
+      ];
+      const [table] = readTables(render(columns, rows));
 
-    /** Each `\\` below is one literal backslash in the cell value. */
-    it.each([
-      ['a backslash before a pipe', 'x\\|y'],
-      ['a backslash before other punctuation', 'a\\*b'],
-      ['a trailing backslash', 'C:\\tmp\\'],
-      ['a bare pipe', 'x|y'],
-    ])('renders %s as the literal value', (_label, value) => {
-      const cell = renderedCell(value);
-
-      expect(hasUnescapedPipe(cell)).toBe(false);
-      expect(renderMarkdown(cell)).toBe(value);
+      expect(table?.header).toEqual(columns);
+      expect(table?.rows).toEqual([
+        ['2026-05-28', '39180000000000.00', '3', '{"a":1}'],
+        ['2026-05-27', '', '2.5', '[1,2]'],
+      ]);
     });
 
-    it('keeps a serialized object cell valid JSON through the render', () => {
-      const value = { q: 'a|b"c' };
-      const rendered = renderMarkdown(renderedCell(value));
+    it('reads a hostile column name and cell back exactly, in their own column', () => {
+      const column = `${HOSTILE_VALUE} col`;
+      const object = { q: HOSTILE_VALUE };
+      const [table] = readTables(
+        render(['id', column, 'obj'], [{ id: '1', [column]: HOSTILE_VALUE, obj: object }]),
+      );
 
-      expect(rendered).toBe(JSON.stringify(value));
-      expect(JSON.parse(rendered)).toEqual(value);
+      expect(table?.header).toEqual(['id', column, 'obj']);
+      expect(table?.rows).toEqual([['1', HOSTILE_VALUE, JSON.stringify(object)]]);
     });
 
     it('leaves structuredContent byte-identical to the dataframe row', async () => {
-      const rows = [{ v: 'x\\|y' }];
+      const rows = [{ v: HOSTILE_VALUE }];
       resolveWith(makeQueryResult(rows, 1, ['v']));
 
-      const ctx = createMockContext({ tenantId: 'test-tenant', errors: dataframeQueryTool.errors });
-      const result = await dataframeQueryTool.handler(
-        dataframeQueryTool.input.parse({ sql: 'SELECT v FROM df_ABCDE_FGHIJ' }),
-        ctx,
-      );
+      const result = await runToolContract(dataframeQueryTool, {
+        sql: 'SELECT v FROM df_ABCDE_FGHIJ',
+      });
 
-      expect(result.rows).toEqual(rows);
+      expect((result.structuredContent as { rows: unknown[] }).rows).toEqual(rows);
+      expect(readTables(contentText(result.content))[0]?.rows).toEqual([[HOSTILE_VALUE]]);
     });
+  });
+});
+
+/**
+ * The refusals above are stubs shaped like the canvas's. These run the real
+ * bridge over a DuckDB canvas whose row ceiling is 1000, so what reaches the
+ * reroute is what the gate and the bridge actually raise.
+ */
+describe('refusals from a real canvas', () => {
+  const opened: DataCanvas[] = [];
+
+  async function useRealBridge(): Promise<void> {
+    const { CanvasBridge } = await vi.importActual<
+      typeof import('@/services/canvas-bridge/canvas-bridge.js')
+    >('@/services/canvas-bridge/canvas-bridge.js');
+    const provider = new DuckdbProvider({
+      defaultRowLimit: 1000,
+      exportRootPath: tmpdir(),
+      memoryLimitMb: 64,
+      schemaSniffRows: 100,
+    });
+    const canvas = new DataCanvas(provider, new CanvasRegistry(provider));
+    opened.push(canvas);
+    vi.mocked(getCanvasBridge).mockReturnValue(new CanvasBridge(canvas));
+  }
+
+  afterEach(async () => {
+    for (const canvas of opened.splice(0)) await canvas.shutdown(createMockContext());
+  });
+
+  it.each(['SELECT * FROM information_schema.tables', 'SELECT * FROM duckdb_tables()'])(
+    'reports %s as system_catalog_access on both surfaces',
+    async (sql) => {
+      await useRealBridge();
+
+      const result = await runToolContract(dataframeQueryTool, { sql });
+
+      const hint = declaredRecovery('system_catalog_access');
+      expect(result.isError).toBe(true);
+      expect(result.structuredContent).toMatchObject({
+        error: {
+          code: JsonRpcErrorCode.ValidationError,
+          data: { reason: 'system_catalog_access', recovery: { hint } },
+        },
+      });
+      expect(readParagraphs(contentText(result.content))).toContain(`Recovery: ${hint}`);
+    },
+  );
+
+  it('reports which_secret as invalid_sql, keeping the gate reason and message', async () => {
+    await useRealBridge();
+
+    const result = await runToolContract(dataframeQueryTool, {
+      sql: "SELECT * FROM which_secret('s3://x/y', 's3')",
+    });
+
+    const message = 'Canvas query contains disallowed operators: WHICH_SECRET.';
+    expect(result.structuredContent).toMatchObject({
+      error: {
+        code: JsonRpcErrorCode.ValidationError,
+        message,
+        data: {
+          reason: 'invalid_sql',
+          canvas_reason: 'plan_operator_not_allowed',
+          recovery: { hint: declaredRecovery('invalid_sql') },
+        },
+      },
+    });
+    expect(contentText(result.content)).toContain(message);
+  });
+
+  it.each([
+    [{ row_limit: 5000 }, 'row_limit (5000) exceeds the row ceiling this server allows.'],
+    [{ preview: 20, row_limit: 10 }, 'preview (20) may not exceed row_limit (10).'],
+  ])('restates the bound %j in this tool parameter names', async (bounds, message) => {
+    await useRealBridge();
+
+    const result = await runToolContract(dataframeQueryTool, { sql: 'SELECT 1 AS one', ...bounds });
+
+    expect(result.structuredContent).toMatchObject({
+      error: {
+        code: JsonRpcErrorCode.ValidationError,
+        message,
+        data: { reason: 'invalid_query_bounds' },
+      },
+    });
+    expect(contentText(result.content)).toContain(message);
   });
 });

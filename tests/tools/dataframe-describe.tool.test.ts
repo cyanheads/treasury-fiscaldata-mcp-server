@@ -3,8 +3,11 @@
  * @module tests/tools/dataframe-describe.tool.test
  */
 
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
-import { describe, expect, it, vi } from 'vitest';
+import { tmpdir } from 'node:os';
+import { CanvasRegistry, DataCanvas, DuckdbProvider } from '@cyanheads/mcp-ts-core/canvas';
+import { createMockContext, runToolContract } from '@cyanheads/mcp-ts-core/testing';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { contentText, parseMarkdown, readInlines } from '../helpers/markdown-read-back.js';
 
 vi.mock('@/services/canvas-bridge/canvas-bridge.js', () => ({
   getCanvasBridge: vi.fn(),
@@ -62,8 +65,93 @@ describe('dataframeDescribeTool', () => {
     expect(df?.source_tool).toBe('treasury_get_debt');
     expect(df?.row_count).toBe(100);
     expect(df?.truncated).toBe(false);
-    expect(df?.column_schema).toHaveLength(2);
-    expect(df?.column_schema[0]?.nullable).toBe(true);
+    expect(df?.column_schema).toEqual([
+      { name: 'record_date', type: 'VARCHAR', nullable: true },
+      { name: 'tot_pub_debt_out_amt', type: 'VARCHAR', nullable: true },
+    ]);
+  });
+
+  it.each([
+    [{ name: '  df_ABCDE_FGHIJ  ' }, 'df_ABCDE_FGHIJ'],
+    [{ name: 'df_ABCDE_FGHIJ' }, 'df_ABCDE_FGHIJ'],
+    [{ name: '   ' }, undefined],
+    [{}, undefined],
+  ])('asks the bridge for %j as %j', async (raw, requested) => {
+    const describeTables = vi.fn().mockResolvedValue([]);
+    vi.mocked(getCanvasBridge).mockReturnValue({
+      describe: describeTables,
+    } as unknown as ReturnType<typeof getCanvasBridge>);
+    const ctx = createMockContext({ errors: dataframeDescribeTool.errors });
+
+    await dataframeDescribeTool.handler(dataframeDescribeTool.input.parse(raw), ctx);
+
+    expect(describeTables).toHaveBeenCalledExactlyOnceWith(ctx, requested);
+  });
+
+  it('reports truncation, its cap, and an unrecorded nullable on both surfaces', async () => {
+    vi.mocked(getCanvasBridge).mockReturnValue({
+      describe: vi.fn().mockResolvedValue([
+        {
+          ...SAMPLE_META,
+          truncated: true,
+          maxRows: 5000,
+          columnSchema: [{ name: 'record_date', type: 'VARCHAR' }],
+        },
+        { ...SAMPLE_META, tableName: 'df_KLMNO_PQRST', truncated: true, maxRows: undefined },
+      ]),
+    } as unknown as ReturnType<typeof getCanvasBridge>);
+
+    const result = await runToolContract(dataframeDescribeTool, {});
+
+    expect(result.isError).toBeFalsy();
+    expect(result.structuredContent).toMatchObject({
+      dataframes: [
+        {
+          name: 'df_ABCDE_FGHIJ',
+          truncated: true,
+          max_rows: 5000,
+          column_schema: [{ name: 'record_date', type: 'VARCHAR', nullable: true }],
+        },
+        { name: 'df_KLMNO_PQRST', truncated: true },
+      ],
+    });
+    expect(
+      (result.structuredContent as { dataframes: { max_rows?: number }[] }).dataframes[1]?.max_rows,
+    ).toBeUndefined();
+    const lines = readInlines(contentText(result.content));
+    expect(lines).toContain('Rows: 100 (truncated at 5000)');
+    expect(lines).toContain('Rows: 100 (truncated)');
+    expect(lines).toContain('Columns: record_date:VARCHAR (nullable:true)');
+  });
+
+  it('reports a recorded engine type in place of the type tag', async () => {
+    vi.mocked(getCanvasBridge).mockReturnValue({
+      describe: vi.fn().mockResolvedValue([
+        {
+          ...SAMPLE_META,
+          columnSchema: [
+            { name: 'amt', type: 'VARCHAR', engineType: 'DECIMAL(20,2)', nullable: true },
+            { name: 'record_date', type: 'VARCHAR', nullable: true },
+          ],
+        },
+      ]),
+    } as unknown as ReturnType<typeof getCanvasBridge>);
+
+    const result = await runToolContract(dataframeDescribeTool, {});
+
+    expect(result.structuredContent).toMatchObject({
+      dataframes: [
+        {
+          column_schema: [
+            { name: 'amt', type: 'DECIMAL(20,2)', nullable: true },
+            { name: 'record_date', type: 'VARCHAR', nullable: true },
+          ],
+        },
+      ],
+    });
+    expect(readInlines(contentText(result.content))).toContain(
+      'Columns: amt:DECIMAL(20,2) (nullable:true), record_date:VARCHAR (nullable:true)',
+    );
   });
 
   it('returns empty array when no dataframes are registered', async () => {
@@ -206,5 +294,117 @@ describe('dataframeDescribeTool', () => {
     const blocks = dataframeDescribeTool.format!(result);
     const text = (blocks[0] as { text: string }).text;
     expect(text).toContain('No active dataframes');
+  });
+});
+
+/**
+ * A table name, a source tool's parameters (a treasury_dataframe_query SQL
+ * string among them), and a column name (a SQL alias) are text this server did
+ * not write. content[] has to read back, under a real CommonMark parse, as the
+ * values structuredContent carries — never as emphasis, a link, a code span, an
+ * entity, or a line that starts a new block.
+ */
+describe('content[] reads back the values structuredContent carries', () => {
+  it.each([
+    'COUNT(*) … COUNT(*)',
+    'SELECT COUNT(*) AS a, COUNT(*) AS b FROM df_x',
+    'a_b_c',
+    'a`b',
+    '[x](y)',
+    '&amp;',
+    '  lead and trail  ',
+    '*a* <b>x</b>',
+    '# not a heading',
+    'line\nbreak',
+    'crlf\r\nbreak',
+    'cr\rbreak',
+    'backslash\\\nbefore a break',
+  ])('%j as a table name, a query parameter, and a column name', async (value) => {
+    vi.mocked(getCanvasBridge).mockReturnValue({
+      describe: vi.fn().mockResolvedValue([
+        {
+          ...SAMPLE_META,
+          tableName: value,
+          queryParams: { sql: value },
+          columnSchema: [{ name: value, type: 'VARCHAR', nullable: true }],
+        },
+      ]),
+    } as unknown as ReturnType<typeof getCanvasBridge>);
+
+    const result = await runToolContract(dataframeDescribeTool, {});
+
+    const [df] = (
+      result.structuredContent as {
+        dataframes: {
+          name: string;
+          query_params: { sql: string };
+          column_schema: { name: string }[];
+        }[];
+      }
+    ).dataframes;
+    expect([df?.name, df?.query_params.sql, df?.column_schema[0]?.name]).toEqual([
+      value,
+      value,
+      value,
+    ]);
+    const text = contentText(result.content);
+    expect(readInlines(text)).toEqual([
+      '⟦strong_open⟧1 active dataframe(s):⟦strong_close⟧',
+      df!.name,
+      'Source: treasury_get_debt',
+      'Rows: 100',
+      'Created: 2026-05-28T10:00:00.000Z — Expires: 2026-05-29T10:00:00.000Z',
+      `Params: sql=${JSON.stringify(df!.query_params.sql)}`,
+      `Columns: ${df!.column_schema[0]!.name}:VARCHAR (nullable:true)`,
+    ]);
+    expect(parseMarkdown(text).filter((token) => token.type === 'heading_open')).toHaveLength(1);
+  });
+});
+
+/**
+ * Through the real bridge and a DuckDB canvas: a table treasury_dataframe_query
+ * registers keeps the types its SELECT produced, and describe has to report
+ * those rather than the VARCHAR of the tables the data tools stage.
+ */
+describe('a register_as table on a real canvas', () => {
+  const opened: DataCanvas[] = [];
+
+  afterEach(async () => {
+    for (const canvas of opened.splice(0)) await canvas.shutdown(createMockContext());
+  });
+
+  it('reports the column types its SELECT produced on both surfaces', async () => {
+    const { CanvasBridge } = await vi.importActual<
+      typeof import('@/services/canvas-bridge/canvas-bridge.js')
+    >('@/services/canvas-bridge/canvas-bridge.js');
+    const provider = new DuckdbProvider({
+      defaultRowLimit: 1000,
+      exportRootPath: tmpdir(),
+      memoryLimitMb: 64,
+      schemaSniffRows: 100,
+    });
+    const canvas = new DataCanvas(provider, new CanvasRegistry(provider));
+    opened.push(canvas);
+    const bridge = new CanvasBridge(canvas);
+    vi.mocked(getCanvasBridge).mockReturnValue(bridge);
+    const ctx = createMockContext({ errors: dataframeDescribeTool.errors });
+    await bridge.query(ctx, "SELECT CAST('12.5' AS DECIMAL(20,2)) AS amt, 1 AS one", {
+      registerAs: 'df_typed',
+    });
+
+    const result = await dataframeDescribeTool.handler(dataframeDescribeTool.input.parse({}), ctx);
+
+    expect(result.dataframes.map((df) => [df.name, df.column_schema])).toEqual([
+      [
+        'df_typed',
+        [
+          { name: 'amt', type: 'DECIMAL(20,2)', nullable: true },
+          { name: 'one', type: 'INTEGER', nullable: true },
+        ],
+      ],
+    ]);
+    expect(readInlines(contentText(dataframeDescribeTool.format!(result)))).toContain(
+      'Columns: amt:DECIMAL(20,2) (nullable:true), one:INTEGER (nullable:true)',
+    );
   });
 });

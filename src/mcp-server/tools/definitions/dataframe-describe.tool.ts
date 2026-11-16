@@ -8,6 +8,7 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { markdownValue } from '@/mcp-server/tools/markdown-encoding.js';
 import { getCanvasBridge } from '@/services/canvas-bridge/canvas-bridge.js';
 
 export const dataframeDescribeTool = tool('treasury_dataframe_describe', {
@@ -47,7 +48,9 @@ export const dataframeDescribeTool = tool('treasury_dataframe_describe', {
             created_at: z.string().describe('ISO 8601 creation timestamp.'),
             expires_at: z
               .string()
-              .describe('ISO 8601 expiry timestamp. Sliding TTL touched on every dataframe op.'),
+              .describe(
+                'ISO 8601 time this table expires, fixed when it was staged; queries do not extend it. A server restart, or the shared canvas reaching its maximum lifetime, can remove the table sooner.',
+              ),
             row_count: z.number().describe('Rows materialized in the dataframe.'),
             truncated: z
               .boolean()
@@ -98,9 +101,15 @@ export const dataframeDescribeTool = tool('treasury_dataframe_describe', {
         row_count: meta.rowCount,
         truncated: meta.truncated,
         max_rows: meta.maxRows,
+        /**
+         * A register_as table's record carries the engine's exact type; the
+         * tag beside it maps DECIMAL(20,2) to VARCHAR, which would send a
+         * caller to CAST a column that is already numeric. A staged table's
+         * record has the tag alone, and it is exact for the types staging uses.
+         */
         column_schema: meta.columnSchema.map((c) => ({
           name: c.name,
-          type: c.type,
+          type: c.engineType ?? c.type,
           nullable: c.nullable ?? true,
         })),
       })),
@@ -116,7 +125,7 @@ export const dataframeDescribeTool = tool('treasury_dataframe_describe', {
       const truncated = df.truncated
         ? ` (truncated${df.max_rows ? ` at ${df.max_rows}` : ''})`
         : '';
-      lines.push(`### ${df.name}`);
+      lines.push(`### ${markdownValue(df.name)}`);
       lines.push(`- Source: ${df.source_tool}`);
       lines.push(`- Rows: ${df.row_count}${truncated}`);
       lines.push(`- Created: ${df.created_at} — Expires: ${df.expires_at}`);
@@ -132,11 +141,12 @@ export const dataframeDescribeTool = tool('treasury_dataframe_describe', {
         .filter(([, v]) => v !== undefined)
         .map(([k, v]) => `${k}=${JSON.stringify(v)}`)
         .join(', ');
-      if (params) lines.push(`- Params: ${params}`);
+      // Each joined line is escaped whole: two values escaped apart can still form syntax edge to edge.
+      if (params) lines.push(`- Params: ${markdownValue(params)}`);
       const cols = df.column_schema
         .map((c) => `${c.name}:${c.type} (nullable:${c.nullable})`)
         .join(', ');
-      lines.push(`- Columns: ${cols}`);
+      lines.push(`- Columns: ${markdownValue(cols)}`);
       lines.push('');
     }
     return [{ type: 'text', text: lines.join('\n').trimEnd() }];

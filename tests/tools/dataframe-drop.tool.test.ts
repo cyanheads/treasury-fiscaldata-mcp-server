@@ -95,6 +95,9 @@ describe('treasury_dataframe_drop', () => {
     expect(result.content).toEqual([
       { type: 'text', text: `Dropped dataframe ${name}. dropped: true` },
     ]);
+    // Read before any describe, whose orphan sweep would delete a record the drop left.
+    expect(await ctx.state.get(`df-meta/${name}`)).toBeNull();
+    expect(await ctx.state.get(`df-meta/${other!.tableName}`)).not.toBeNull();
     expect(await service.describe(ctx, name)).toEqual([]);
     await expect(service.query(ctx, `SELECT * FROM "${name}"`)).rejects.toMatchObject({
       data: { reason: 'missing_table' },

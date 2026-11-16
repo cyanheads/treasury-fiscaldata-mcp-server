@@ -8,6 +8,7 @@
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { SQL_GATE_REASONS } from '@cyanheads/mcp-ts-core/canvas';
 import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
+import { markdownValue } from '@/mcp-server/tools/markdown-encoding.js';
 import { getCanvasBridge } from '@/services/canvas-bridge/canvas-bridge.js';
 
 /**
@@ -17,22 +18,18 @@ import { getCanvasBridge } from '@/services/canvas-bridge/canvas-bridge.js';
  */
 const GATE_REASONS: ReadonlySet<string> = new Set(Object.values(SQL_GATE_REASONS));
 
-/**
- * Escape one Markdown table cell. Backslashes go first and pipes second: a pipe
- * escaped into `\|` while the value's own backslashes are left bare puts the
- * cell's content at the mercy of the client's renderer, which consumes a
- * backslash before any ASCII punctuation. Treasury columns are VARCHAR carrying
- * whatever upstream published, so the value the agent reads in `content[]` would
- * silently differ from the one in `structuredContent`.
- */
-function escapeCell(value: string): string {
-  return value.replace(/\\/g, '\\\\').replace(/\|/g, '\\|');
+/** A result value as cell text: an object or array as its JSON, null as an empty cell. */
+function cellText(value: unknown): string {
+  if (value === null || value === undefined) return '';
+  if (typeof value === 'string') return value;
+  if (typeof value === 'object') return JSON.stringify(value);
+  return String(value);
 }
 
 export const dataframeQueryTool = tool('treasury_dataframe_query', {
   title: 'Query Treasury Dataframes',
   description:
-    'Run a single-statement SELECT against DataCanvas dataframes registered by treasury_query_dataset, treasury_get_debt, treasury_get_interest_rates, and treasury_get_exchange_rates. Read-only: writes, DDL, DROP, COPY, PRAGMA, ATTACH, and external-file table functions are rejected. System catalogs (information_schema, pg_catalog, sqlite_master, duckdb_*) are denied at the bridge layer. All Treasury dataframe columns are VARCHAR — CAST to DECIMAL or DATE for arithmetic and date comparisons. Use treasury_dataframe_describe to list available table names and column schemas before querying.',
+    'Run a single-statement SELECT against DataCanvas dataframes registered by treasury_query_dataset, treasury_get_debt, treasury_get_interest_rates, and treasury_get_exchange_rates. Read-only: writes, DDL, DROP, COPY, PRAGMA, ATTACH, and external-file table functions are rejected. System catalogs (information_schema, pg_catalog, sqlite_master, duckdb_*) are denied at the bridge layer. Tables staged from Treasury API rows hold every column as VARCHAR — CAST to DECIMAL or DATE for arithmetic and date comparisons; a register_as table keeps the column types its SELECT produced. Use treasury_dataframe_describe to list available table names and column schemas before querying.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
 
   enrichment: {
@@ -63,7 +60,7 @@ export const dataframeQueryTool = tool('treasury_dataframe_query', {
     {
       reason: 'system_catalog_access',
       code: JsonRpcErrorCode.ValidationError,
-      when: 'SQL references a denied DuckDB system catalog (information_schema, pg_catalog, sqlite_master, duckdb_*)',
+      when: 'SQL references a denied DuckDB system catalog or metadata view (information_schema, pg_catalog, sqlite_master, duckdb_*), or register_as names one',
       recovery:
         'Query only df_<id> tables. Use treasury_dataframe_describe to list available dataframes.',
     },
@@ -79,7 +76,7 @@ export const dataframeQueryTool = tool('treasury_dataframe_query', {
       code: JsonRpcErrorCode.NotFound,
       when: 'A df_<id> table named in the SQL is not on the canvas — its TTL expired, it was dropped, or it was never registered',
       recovery:
-        'Call treasury_dataframe_describe to list live tables, or re-stage the rows by passing canvas_id to treasury_query_dataset, treasury_get_debt, treasury_get_interest_rates, or treasury_get_exchange_rates.',
+        'Call treasury_dataframe_describe to list live tables, or re-stage the rows by passing canvas_id to treasury_query_dataset, or to treasury_get_debt, treasury_get_interest_rates, or treasury_get_exchange_rates with mode=series.',
     },
     {
       reason: 'invalid_query_bounds',
@@ -95,13 +92,13 @@ export const dataframeQueryTool = tool('treasury_dataframe_query', {
       .string()
       .min(1)
       .describe(
-        'Single-statement SELECT against df_<id> tables. All values in Treasury dataframes are VARCHAR (strings) per the API contract — CAST to DECIMAL or DATE for arithmetic and date comparisons. Example: SELECT record_date, CAST(tot_pub_debt_out_amt AS DECIMAL) AS debt FROM df_xxxxx ORDER BY record_date DESC LIMIT 10.',
+        'Single-statement SELECT against df_<id> tables. Tables staged from Treasury API rows hold every value as VARCHAR (strings), per the API contract — CAST to DECIMAL or DATE for arithmetic and date comparisons; a register_as table keeps the column types its SELECT produced. Example: SELECT record_date, CAST(tot_pub_debt_out_amt AS DECIMAL) AS debt FROM df_xxxxx ORDER BY record_date DESC LIMIT 10.',
       ),
     register_as: z
       .string()
       .optional()
       .describe(
-        'Persist the result as a new dataframe under this exact name, to chain analyses. The name is used verbatim — any name works, and a df_ prefix keeps it consistent with the tables the data tools mint. Echoed back in registered_as.',
+        'Persist the result as a new dataframe under this exact name, to chain analyses. Use a plain identifier (letters, digits, underscores, starting with a letter or underscore); a df_ prefix keeps it consistent with the tables the data tools mint, and a DuckDB system-catalog or metadata-view name (duckdb_tables, pg_tables, information_schema, …) is refused before anything is staged. Echoed back in registered_as.',
       ),
     preview: z
       .number()
@@ -165,19 +162,29 @@ export const dataframeQueryTool = tool('treasury_dataframe_query', {
       });
     } catch (err) {
       /**
-       * Surface gate violations — from this server's bridge and from the
-       * framework canvas layer — as typed contract reasons. Explicit recovery
-       * forwards preserve the direct-handler contract tested by this server;
-       * the framework also fills absent hints at the response boundary.
+       * Surface the framework canvas layer's SQL gate violations, and the
+       * bridge's refusal of a register_as name, as typed contract reasons.
+       * Explicit recovery forwards preserve the direct-handler contract tested
+       * by this server; the framework also fills absent hints at the response
+       * boundary.
        */
       if (!(err instanceof McpError)) throw err;
       const reason = err.data?.reason;
       const msg = err.message;
       if (reason === 'system_catalog_access') {
+        /**
+         * Two refusals share this reason. SQL that reads a catalog takes the
+         * contract's hint, which names this server's tools where the gate's
+         * own hint does not. A register_as name spelled like a catalog is
+         * refused by the bridge with a hint of its own — rename the target —
+         * and the SQL hint would send the caller after a query that was fine.
+         */
         throw ctx.fail(
           'system_catalog_access',
           msg,
-          { ...ctx.recoveryFor('system_catalog_access') },
+          err.data?.registerAs === undefined
+            ? { ...ctx.recoveryFor('system_catalog_access') }
+            : { recovery: err.data.recovery },
           { cause: err },
         );
       }
@@ -244,7 +251,7 @@ export const dataframeQueryTool = tool('treasury_dataframe_query', {
 
     if (result.rowCount === 0) {
       ctx.enrich.notice(
-        'Query returned 0 rows. Verify dataframe names (use treasury_dataframe_describe) and check your WHERE conditions. Remember all Treasury columns are VARCHAR — use CAST for comparisons.',
+        'Query returned 0 rows. Verify dataframe names (use treasury_dataframe_describe) and check your WHERE conditions. Columns staged from Treasury API rows are VARCHAR — use CAST for numeric and date comparisons.',
       );
     } else if (result.truncated) {
       /**
@@ -325,17 +332,11 @@ export const dataframeQueryTool = tool('treasury_dataframe_query', {
       return [{ type: 'text', text: lines.join('\n') }];
     }
 
-    const header = `| ${result.columns.join(' | ')} |`;
+    const header = `| ${result.columns.map(markdownValue).join(' | ')} |`;
     const sep = `| ${result.columns.map(() => '---').join(' | ')} |`;
     lines.push(header, sep);
     for (const row of result.rows) {
-      const cells = result.columns.map((c) => {
-        const v = row[c];
-        if (v === null || v === undefined) return '';
-        if (typeof v === 'string') return escapeCell(v);
-        if (typeof v === 'object') return escapeCell(JSON.stringify(v));
-        return String(v);
-      });
+      const cells = result.columns.map((c) => markdownValue(cellText(row[c])));
       lines.push(`| ${cells.join(' | ')} |`);
     }
     return [{ type: 'text', text: lines.join('\n') }];
