@@ -9,7 +9,13 @@ import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { nodeExecutable } from '../helpers/node-executable.js';
 
-describe.each(['node', 'bun'])('%s .env startup', (runtime) => {
+/**
+ * Each case blocks in `spawnSync`, whose own 15 s `timeout` bounds a hung start. Vitest
+ * cannot interrupt a synchronous body and only compares wall time after it returns, so its
+ * per-test timeout guards nothing here and fails a healthy start on a loaded machine; it is
+ * set to 0 for this suite.
+ */
+describe.each(['node', 'bun'])('%s .env startup', { timeout: 0 }, (runtime) => {
   const executable = runtime === 'node' ? nodeExecutable() : runtime;
 
   it('reports invalid framework configuration through the startup banner', () => {
