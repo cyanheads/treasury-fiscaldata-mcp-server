@@ -1,6 +1,6 @@
 # treasury-fiscaldata-mcp-server - Directory Structure
 
-Generated on: 2026-10-28 12:58:49
+Generated on: 2026-11-16 10:37:54
 
 ```text
 treasury-fiscaldata-mcp-server/
@@ -28,6 +28,7 @@ treasury-fiscaldata-mcp-server/
 │   ├── 0.2.x/
 │   ├── 0.3.x/
 │   ├── 0.4.x/
+│   ├── 0.5.x/
 │   └── template.md
 ├── docs/
 │   ├── design.md
@@ -154,20 +155,20 @@ treasury-fiscaldata-mcp-server/
 │   │   ├── resources/
 │   │   │   └── definitions/
 │   │   └── tools/
-│   │       └── definitions/
-│   │           ├── dataframe-describe.tool.ts
-│   │           ├── dataframe-drop.tool.ts
-│   │           ├── dataframe-query.tool.ts
-│   │           ├── get-debt.tool.ts
-│   │           ├── get-exchange-rates.tool.ts
-│   │           ├── get-interest-rates.tool.ts
-│   │           ├── list-datasets.tool.ts
-│   │           └── query-dataset.tool.ts
+│   │       ├── definitions/
+│   │       │   ├── dataframe-describe.tool.ts
+│   │       │   ├── dataframe-drop.tool.ts
+│   │       │   ├── dataframe-query.tool.ts
+│   │       │   ├── get-debt.tool.ts
+│   │       │   ├── get-exchange-rates.tool.ts
+│   │       │   ├── get-interest-rates.tool.ts
+│   │       │   ├── list-datasets.tool.ts
+│   │       │   └── query-dataset.tool.ts
+│   │       ├── endpoint-fetcher.ts
+│   │       └── markdown-encoding.ts
 │   ├── services/
 │   │   ├── canvas-bridge/
-│   │   │   ├── canvas-bridge.ts
-│   │   │   ├── sql-gate-extras.test.ts
-│   │   │   └── sql-gate-extras.ts
+│   │   │   └── canvas-bridge.ts
 │   │   └── fiscal-data/
 │   │       ├── datasets.ts
 │   │       ├── fiscal-data-service.ts
@@ -178,6 +179,8 @@ treasury-fiscaldata-mcp-server/
 │   │   ├── node-env.test.ts
 │   │   └── server-config.test.ts
 │   ├── helpers/
+│   │   ├── fiscal-data-upstream.ts
+│   │   ├── markdown-read-back.ts
 │   │   └── node-executable.ts
 │   ├── prompts/
 │   ├── resources/
@@ -188,6 +191,7 @@ treasury-fiscaldata-mcp-server/
 │   │   ├── lint-packaging.test.ts
 │   │   └── verify-catalog.test.ts
 │   ├── services/
+│   │   ├── canvas-bridge.test.ts
 │   │   └── fiscal-data-service.test.ts
 │   └── tools/
 │       ├── dataframe-describe.tool.test.ts
@@ -197,6 +201,7 @@ treasury-fiscaldata-mcp-server/
 │       ├── get-exchange-rates.tool.test.ts
 │       ├── get-interest-rates.tool.test.ts
 │       ├── list-datasets.tool.test.ts
+│       ├── markdown-encoding.test.ts
 │       ├── query-dataset.tool.test.ts
 │       └── wire-contract.test.ts
 ├── .dockerignore

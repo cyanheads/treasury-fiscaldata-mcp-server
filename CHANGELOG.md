@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.5.0](changelog/0.5.x/0.5.0.md) — 2026-11-16 · ⚠️ Breaking
+
+Rejected queries report the reason the API implies instead of a missing endpoint, table cells read back exactly as structuredContent, concurrent stagings share one canvas, and DuckDB metadata-view names are refused in dataframe SQL and as register_as targets (breaking).
+
 ## [0.4.0](changelog/0.4.x/0.4.0.md) — 2026-10-28
 
 Treasury fiscal-analysis guidance served over MCP and shipped in installable packages, with mcp-ts-core 0.13.18 and DuckDB 2.
