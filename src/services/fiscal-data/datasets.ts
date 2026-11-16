@@ -5,10 +5,11 @@
  *
  * Every path and every field name here is a value a caller copies into
  * `treasury_query_dataset`, so both must resolve upstream: a dead path comes
- * back as `invalid_endpoint` and an unknown field name as `invalid_field`, and
- * both recovery hints send the caller back to `treasury_list_datasets` — this
- * file. Run `bun run verify:catalog` after editing; it probes each endpoint and
- * fails on a path that does not answer or a field the endpoint does not have.
+ * back as `invalid_endpoint`, whose recovery hint sends the caller back to
+ * `treasury_list_datasets` — this file — and an unknown field name as
+ * `invalid_field`. Run `bun run verify:catalog` after editing; it probes each
+ * endpoint and fails on a path that does not answer or a field the endpoint
+ * does not have.
  *
  * Field lists mirror the endpoint's full field set, so a new upstream column
  * shows up as a single unlisted-field finding rather than disappearing into

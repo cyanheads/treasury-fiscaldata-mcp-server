@@ -12,7 +12,7 @@ import type { DatasetCategory } from '@/services/fiscal-data/types.js';
 export const listDatasetsTool = tool('treasury_list_datasets', {
   title: 'List Treasury Fiscal Data Datasets',
   description:
-    'Browse the curated catalog of US Treasury Fiscal Data API endpoints. Returns endpoint paths, field names, descriptions, and update cadence for each dataset. Use this tool before treasury_query_dataset to discover the correct endpoint path and field names — a typo in either causes a 400 error from the API. The catalog is a curated subset of the full API — pass any endpoint path directly to treasury_query_dataset to query datasets not listed here. The catalog covers debt, interest rates, exchange rates, revenue/spending, savings bonds, and securities datasets.',
+    'Browse the curated catalog of US Treasury Fiscal Data API endpoints. Returns endpoint paths, field names, descriptions, and update cadence for each dataset. Use this tool before treasury_query_dataset to discover the correct endpoint path and field names. The catalog is a curated subset of the full API — pass any endpoint path directly to treasury_query_dataset to query datasets not listed here; a field name the endpoint lacks fails with an error that lists every field it has. The catalog covers debt, interest rates, exchange rates, revenue/spending, savings bonds, and securities datasets.',
   annotations: { readOnlyHint: true, idempotentHint: true },
 
   input: z.object({

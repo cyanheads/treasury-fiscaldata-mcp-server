@@ -83,6 +83,16 @@ describe('listDatasetsTool', () => {
     expect(text).toContain('Daily');
   });
 
+  /**
+   * The API answers an unknown name with a 404, never a 400, and the server
+   * turns that into an error listing every field the endpoint has — the route
+   * to field names for an endpoint this catalog does not carry.
+   */
+  it('describes what a mistyped field returns, not an HTTP status the API no longer sends', () => {
+    expect(listDatasetsTool.description).not.toMatch(/\b400\b/);
+    expect(listDatasetsTool.description).toContain('lists every field');
+  });
+
   it('formats empty result', () => {
     const result = { total: 0, datasets: [] };
     const blocks = listDatasetsTool.format!(result);
