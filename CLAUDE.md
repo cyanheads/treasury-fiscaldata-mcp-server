@@ -2,8 +2,8 @@
 
 **Server:** @cyanheads/treasury-fiscaldata-mcp-server
 **Version:** 0.4.0
-**Framework:** [@cyanheads/mcp-ts-core](https://www.npmjs.com/package/@cyanheads/mcp-ts-core) `^0.13.18`
-**Engines:** Bun ≥1.4.0, Node ≥24.0.0
+**Framework:** [@cyanheads/mcp-ts-core](https://www.npmjs.com/package/@cyanheads/mcp-ts-core) `^0.13.22`
+**Engines:** Bun ≥1.4.4, Node ≥24.0.0
 **MCP SDK:** `@modelcontextprotocol/server` ^2.4.0 (declare `@modelcontextprotocol/client` explicitly for client-side test code)
 **Zod:** ^4.6.7
 
@@ -29,7 +29,7 @@
 **Services:**
 
 - `fiscal-data` — Treasury Fiscal Data API client with embedded endpoint catalog
-- `canvas-bridge` — Adapter over framework DataCanvas: `df_<id>` minting, per-table TTL, system-catalog SQL deny
+- `canvas-bridge` — Adapter over framework DataCanvas: one shared canvas per tenant (`acquireShared`, provenance purged when it is replaced), `df_<id>` minting, fixed per-table expiry, `register_as` catalog-name refusal
 
 **DataCanvas:** on by default (`CANVAS_PROVIDER_TYPE=duckdb`; `none` disables it). All Treasury columns are VARCHAR — CAST to DECIMAL or DATE for arithmetic.
 
@@ -211,8 +211,10 @@ src/
       datasets.ts                          # Curated catalog of 17 endpoints
       types.ts                             # FilterCondition, DatasetCategory, etc.
     canvas-bridge/
-      canvas-bridge.ts                     # DataCanvas adapter — df_<id> minting, TTL, SQL deny
+      canvas-bridge.ts                     # DataCanvas adapter — shared tenant canvas, df_<id> minting, expiry
   mcp-server/
+    tools/markdown-encoding.ts            # Cell, code-span, and notice encoders for content[] Markdown
+    tools/endpoint-fetcher.ts             # Per-call request function for the three convenience tools
     tools/definitions/
       list-datasets.tool.ts               # treasury_list_datasets
       query-dataset.tool.ts               # treasury_query_dataset
@@ -323,9 +325,9 @@ When you complete a skill's checklist, check the boxes and add a completion time
 
 Preserve these project-specific changes when syncing framework scripts: `scripts/build.ts` runs TypeScript with `--emitDeclarationOnly`, then Bun's Node-targeted ESM bundler with external packages and linked source maps. TypeScript uses the selected build project; Bun resolves aliases from `tsconfig.json`. The published entry points remain `dist/index.js` and `dist/index.d.ts`; framework and DuckDB packages must stay external.
 
-`scripts/devcheck.ts` runs `bun run lint:deps` in its dependency check. `knip.jsonc` covers every source, script, and test file, including disconnected modules; documented exceptions cover dynamic logging, tooling, the separately installed registry CLI, and the framework linter's source fallback. Do not restore `tsc-alias` or `depcheck`: both dependency trees include unpatched `braces`.
+`scripts/devcheck.ts` runs `bun run lint:deps` in its dependency check. `knip.jsonc` covers every source, script, and test file, including disconnected modules; documented exceptions cover dynamic logging, tooling, and the separately installed registry CLI. Do not restore `tsc-alias` or `depcheck`: both dependency trees include unpatched `braces`.
 
-`scripts/lint-packaging.ts` preserves the registry description parity check and loads the installed framework's skill validator directly; the framework-repository source fallback does not exist in this server. Its agent-document matcher and `scripts/clean-mcpb.ts` preserve `dist/ext/skills/`, which is executable MCP SDK code, while stripping dependency development skills.
+`scripts/lint-packaging.ts` preserves the registry description parity check and loads the installed framework's skill validator directly; the framework-repository source fallback does not exist in this server. `scripts/clean-mcpb.ts` carries no local change, and the `AGENT_DOC_ENTRY` matcher in both scripts is the framework's: it strips agent docs only at a package root, so the MCP SDK's executable `dist/ext/skills/` ships.
 
 ## Bundling
 

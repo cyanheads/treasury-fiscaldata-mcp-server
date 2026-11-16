@@ -4,7 +4,7 @@ description: "Use treasury_* tools for multi-step Treasury fiscal analysis: esta
 license: Apache-2.0
 metadata:
   author: "cyanheads"
-  version: "1.0"
+  version: "1.1"
 ---
 
 ## Scope
@@ -13,7 +13,7 @@ Use this server for Treasury fiscal accounts, debt outstanding, the average inte
 
 ## Identifiers
 
-Resolve an endpoint and its field names through `treasury_list_datasets`. Its catalog is curated; an absent entry does not establish that Treasury lacks the dataset. For an unlisted endpoint or field, consult Treasury's documentation before querying it.
+Resolve an endpoint and its field names through `treasury_list_datasets`. Its catalog is curated; an absent entry does not establish that Treasury lacks the dataset. For an unlisted endpoint or field, read the endpoint's field names from `treasury_query_dataset` with `page_size: 1` and no `fields`, or from the `invalid_field` error a query naming an absent field returns, which lists every field the endpoint has.
 
 Read category values from records for the period being studied. A field name identifies a column, not the set of values that column contains; security descriptions and country names must match Treasury's returned vocabulary.
 
@@ -22,6 +22,7 @@ The input `canvas_id` requests staging; it does not choose a table name or ident
 ## Gates
 
 - Establish coverage before calculating a total, minimum, maximum, or trend. A generic dataset query fetches one page, and staging stores only that page. Walk the remaining pages with the same selection and sort, retaining each returned table name. Convenience series can return a short inline preview; compare the response counts and notices, then inspect the staged rows before analyzing the series.
+- Keep record identity in a field selection. A generic query that names `fields` returns the distinct combinations of those fields, and `total_count` and `total_pages` count those combinations, not records; two records that agree on every selected field come back as one row. Before counting or summing a selection, include the fields that identify a record, such as `record_date` on `debt_to_penny`.
 - Verify that each staged table exists and inspect its provenance and schema before SQL. Staging can fail or be unavailable, and tables expire. An absent table requires re-fetching the source data, not inventing a table name.
 - Use the staged schema rather than convenience-response property names. For example, a debt response's `total_debt` corresponds to the raw staged column `tot_pub_debt_out_amt`; interest responses rename `avg_interest_rate_amt` to `avg_interest_rate_pct` inline.
 - Align row dates before comparing series. A filtered interest-rate latest result can be the last published month for a discontinued security type. Filtered exchange-rate latest results can span quarters; the top-level newest date does not date every row. Use a common reporting period or disclose the difference.

@@ -33,12 +33,14 @@ This server wraps that API for LLM access: convenience tools for the three headl
 - Base URL: `https://api.fiscaldata.treasury.gov/services/api/fiscal_service`
 - Filter syntax: `filter=col:op:value[,col:op:value...]` — operators: `eq`, `gt`, `gte`, `lt`, `lte`, `in`; `in` takes a parenthesized comma-separated list
 - All API response values are strings (including nulls, returned as the string `"null"`)
-- Pagination: `page[size]` (default 100, hard ceiling 10,000 — above it the API returns 400, not a clamped page), `page[number]`
+- Pagination: `page[size]` (default 100, hard ceiling 10,000 — above it the API rejects the request with a 404, not a clamped page; every tool caps at 10,000), `page[number]`
 - Response envelope: `{ data: [...], meta: { count, labels, dataTypes, dataFormats, "total-count", "total-pages" }, links: { self, first, prev, next, last } }`
 - No programmatic dataset catalog API — the endpoint list is static and must be embedded in the server
 - DataCanvas for time-series results that exceed practical inline budgets (multi-year daily debt history, full exchange rate history)
-- 404 errors (invalid endpoint path) return HTML (not JSON) — service layer must detect via `Content-Type: text/html` and convert to `invalid_endpoint`
-- 400 errors (bad field name, unsupported operator) return JSON `{"error":"Invalid Query Param","message":"..."}` — parse as structured validation error
+- A missing path and every rejected query — unknown name in `fields`, a filter, or `sort`; a sort field `fields` leaves out; unsupported operator; page past the end — return the same `404 text/plain` `Not Found`. A 404 on a request carrying any of those is classified by one bare request to the same path (Decision 16); a 404 on a bare request is `invalid_endpoint`
+- A `fields` selection returns the distinct combinations of those fields, and `total-count` counts them: `fields=record_calendar_year` on `debt_to_penny` reports 34 rows against 8,433 records
+- Outage pages arrive as `503 text/html`; status, never content type, decides the error (5xx → retryable `ServiceUnavailable`)
+- The earlier rejection shape — 400 JSON `{"error":"Invalid Query Param","message":"..."}` — no longer arrives; its message patterns are still classified if it returns
 - "Not found" for domain data (no record for a date, no match for a country) returns `200 OK` with `data:[]` and `meta["total-count"]:0` — NOT a 4xx
 
 ---
@@ -57,7 +59,7 @@ This server wraps that API for LLM access: convenience tools for the three headl
 | Env Var | Required | Description |
 |:--------|:---------|:------------|
 | `CANVAS_PROVIDER_TYPE` | No | DataCanvas for large time-series results; defaults to `duckdb`. With `none`, the data tools still answer, capped and with an enrichment notice saying the rows could not be staged and naming the variable, and `treasury_dataframe_describe` / `treasury_dataframe_query` fail closed with `canvas_unavailable` naming it too. |
-| `CANVAS_TTL_MS` | No | Override DataCanvas default TTL (24h). |
+| `CANVAS_TTL_MS` | No | Lifetime of each staged dataframe (default 24h), fixed at staging. The framework reads it too, as the shared canvas's idle TTL, so startup fails when it exceeds `CANVAS_ABSOLUTE_CAP_MS` (default 7 days). |
 
 No API key env var — the API is fully keyless.
 
@@ -66,7 +68,7 @@ No API key env var — the API is fully keyless.
 ## Implementation Order
 
 1. Config skeleton — `server-config.ts` (minimal, no API keys)
-2. `fiscalDataService` — `fetchPage()` method, response envelope types, filter builder, 404 HTML detection
+2. `fiscalDataService` — `fetchPage()` method, response envelope types, filter builder, 404 classification by bare probe
 3. Embedded dataset catalog (`datasets.ts`) — static map of `{ endpoint, name, description, category, fields[] }`
 4. `treasury_list_datasets` — read-only, no upstream calls
 5. `treasury_query_dataset` — generic wrapper, registering the page on the canvas bridge when applicable
@@ -135,23 +137,23 @@ z.object({
 ```ts
 z.object({
   endpoint: z.string()
-    .describe('Endpoint path returned by treasury_list_datasets (e.g., "/v2/accounting/od/debt_to_penny"). Include the leading slash.'),
+    .describe('Endpoint path returned by treasury_list_datasets (e.g., "/v2/accounting/od/debt_to_penny"). The leading slash is optional.'),
   fields: z.array(z.string()).optional()
-    .describe('Fields to return. Omit to return all fields. Specify field names exactly as listed by treasury_list_datasets — a typo causes a 400.'),
+    .describe('Fields to return. Omit to return all fields. Specify field names exactly as listed by treasury_list_datasets; an unknown name fails with an error listing every field the endpoint has. A selection returns the distinct combinations of its fields, so total_count and total_pages count those combinations rather than the records behind them.'),
   filters: z.array(z.object({
     field: z.string().describe('Field name to filter on.'),
     operator: z.enum(['eq', 'gt', 'gte', 'lt', 'lte', 'in'])
       .describe('Comparison operator. "in" matches any value in the provided list.'),
     // Both arms carry a min-length guard: an empty scalar serializes to a
-    // trailing-colon expression the API rejects as a bad *operator*, and an
-    // empty list or member serializes to something the API accepts and then
-    // does not apply as written.
+    // trailing-colon expression the API rejects as a malformed filter, whose
+    // invalid_filter hint points at the operator, and an empty list or member
+    // serializes to something the API accepts and then does not apply as written.
     value: z.union([z.string().min(1, '…'), z.array(z.string().min(1, '…')).min(1, '…')])
-      .describe('Filter value. For "in", pass an array of strings. Dates use YYYY-MM-DD format.'),
+      .describe('Filter value. For "in", pass an array of strings. Dates use YYYY-MM-DD format. A value cannot contain a comma: the API reads one as the start of another condition.'),
   })).optional()
     .describe('Filter conditions (ANDed together). Multiple filters on different fields are combined in one filter= parameter.'),
   sort: z.string().optional()
-    .describe('Sort expression: field name optionally prefixed with "-" for descending (e.g., "-record_date" for newest-first).'),
+    .describe('Sort expression: field name optionally prefixed with "-" for descending (e.g., "-record_date" for newest-first). When fields is set, include each sort field in it — the API sorts only by fields it returns.'),
   page_size: z.number().int().min(1).max(10000).default(100)
     .describe('Rows per page. Default 100. Raise to 10000 to minimize round trips for small datasets. For large time-series pulls, use canvas_id with treasury_dataframe_query instead.'),
   page_number: z.number().int().min(1).default(1)
@@ -167,7 +169,7 @@ z.object({
   endpoint: z.string().describe('Endpoint that was queried.'),
   data: z.array(z.record(z.string(), z.string()))
     .describe('Rows returned. All values are strings per API contract — including numeric and date fields. Convert in the calling context. Null values appear as the string "null".'),
-  total_count: z.number().describe('Total rows matching the query (across all pages).'),
+  total_count: z.number().describe('Total rows matching the query (across all pages). With fields set, each row is a distinct combination of those fields, so this counts combinations, not records.'),
   total_pages: z.number().describe('Total pages at the current page_size.'),
   page_number: z.number().describe('Current page (1-indexed).'),
   page_size: z.number().describe('Rows per page.'),
@@ -184,25 +186,31 @@ errors: [
   {
     reason: 'invalid_endpoint',
     code: JsonRpcErrorCode.NotFound,
-    when: 'The endpoint path does not exist (API returns 404 HTML)',
+    when: 'The endpoint path does not exist — the API answers 404 to the request, and again to a bare request for the same path when the query carried fields, filters, sort, or a later page',
     recovery: 'Call treasury_list_datasets to find the correct endpoint path.',
   },
   {
     reason: 'invalid_field',
     code: JsonRpcErrorCode.ValidationError,
-    when: 'A field name in fields= or filter= does not exist on this endpoint — API returns JSON {"error":"Invalid Query Param","message":"...Field \'X\' does not exist..."} (not HTML)',
-    recovery: 'Call treasury_list_datasets with the endpoint to see the available field names.',
+    when: 'A name in fields, a filter, or sort does not exist on this endpoint; the message names each unknown name and lists every field the endpoint has',
+    recovery: 'Replace each unknown name with one of the field names this error lists for the endpoint.',
+  },
+  {
+    reason: 'sort_field_not_selected',
+    code: JsonRpcErrorCode.ValidationError,
+    when: 'fields is set and leaves out a sort field — the API returns only the selected fields and sorts only by those, so it rejects the query',
+    recovery: 'Add each sort field to fields, or omit fields.',
   },
   {
     reason: 'invalid_filter',
     code: JsonRpcErrorCode.ValidationError,
-    when: 'The filter expression uses an unsupported operator — API returns JSON {"error":"Invalid Query Param","message":"...Operator \':{op}:\' is not supported..."} (not HTML)',
-    recovery: 'Supported operators: eq, gt, gte, lt, lte, in. Dates use YYYY-MM-DD. Check field names against treasury_list_datasets.',
+    when: 'A filter value contains a comma, which the API reads as the start of another condition, so the call is refused before any request; or the API rejected a page-1 query with a filter or sort whose every field name exists on the endpoint and whose sort fields are all selected, so the filter or sort expression itself was refused',
+    recovery: 'Remove any comma from filter values: the API reads one as the start of another condition (write 1000, not 1,000). If none has one, resend without sort, then with one filter at a time, to find the expression the API refuses.',
   },
   {
     reason: 'page_out_of_range',
     code: JsonRpcErrorCode.ValidationError,
-    when: 'page_number is past the last page of the matched set — API returns JSON {"error":"Invalid Query Param","message":"...Page #N is out of range..."}',
+    when: 'page_number is past the last page of the matched set — the API rejects the query although every field name in it exists',
     recovery: 'Request a page_number within total_pages, which this tool returns on every successful response.',
   },
 ]
@@ -210,7 +218,7 @@ errors: [
 
 **Annotations:** `readOnlyHint: true`, `idempotentHint: true`
 
-**DataCanvas note:** registration goes through this server's own `canvasBridge.registerDataframe`, not the framework's `spillover()` helper — the bridge is what mints the `df_XXXXX_XXXXX` name, derives an all-nullable schema, and records per-table TTL and provenance in `ctx.state`. The caller's `canvas_id` is a request to stage, never the name.
+**DataCanvas note:** registration goes through this server's own `canvasBridge.registerDataframe`, not the framework's `spillover()` helper — the bridge is what mints the `df_XXXXX_XXXXX` name, registers the rows under the framework's `inferSchemaFromRows` schema (every column nullable), and records per-table TTL and provenance in `ctx.state`. The caller's `canvas_id` is a request to stage, never the name.
 
 **Enrichment:** `notice` (guidance for an off-catalog endpoint, a staged table, staging that was requested and produced none, or an empty match — composed into one string, since the field is last-wins) and `totalCount` (the full match behind this page).
 
@@ -286,6 +294,20 @@ errors: [
     when: 'No debt record exists for the requested date (API returns HTTP 200 with empty data[], not 404 — service layer must detect total-count: 0)',
     recovery: 'Fiscal Data only records debt on business days from 1993-04-01 onward. Try the nearest business day, or use mode=series with a date range.',
   },
+  {
+    reason: 'invalid_filter',
+    code: JsonRpcErrorCode.ValidationError,
+    when: 'A date value contains a comma, which the API would read as the start of another filter condition — the call is refused before any request',
+    recovery: 'Send date, start_date, and end_date as plain YYYY-MM-DD dates (e.g. 2026-05-28); no filter value can carry a comma.',
+    thrownBy: 'service',
+  },
+  {
+    reason: 'upstream_schema_changed',
+    code: JsonRpcErrorCode.InternalError,
+    when: 'The Debt to the Penny endpoint no longer has a field this tool requests, or its response no longer lists a field this tool reads — the API renamed or dropped it',
+    recovery: 'Query /v2/accounting/od/debt_to_penny with treasury_query_dataset; omit fields to see the fields it has now.',
+    thrownBy: 'service',
+  },
 ]
 ```
 
@@ -345,11 +367,31 @@ z.object({
 
 **Bounds.** `mode=series` fetches one page of 10,000, which covers the whole 4,993-row corpus; `mode=latest` fetches 100 and keeps the newest `record_date`, against an all-time widest month of 17 rows and 22 distinct `security_desc` values ever published. The inline `rates` array is capped at 20 in series mode **unconditionally** — not only when a canvas absorbed the remainder, since the default install has no canvas and used to return the entire fetched page.
 
-**Errors:** Baseline errors only (upstream 5xx, timeout). No domain errors — if `security_type` doesn't match, the API returns empty rows and the handler surfaces `total_records: 0` with enrichment guidance.
+**Errors:** `invalid_filter` and `upstream_schema_changed` (Decision 19), plus baseline errors. A `security_type` that matches nothing is not an error: the handler returns `total_records: 0` with the empty-result guidance.
+```ts
+errors: [
+  {
+    reason: 'invalid_filter',
+    code: JsonRpcErrorCode.ValidationError,
+    when: 'security_type, start_date, or end_date contains a comma, which the API would read as the start of another filter condition — the call is refused before any request',
+    recovery: 'Send security_type as one exact security_desc name and start_date/end_date as plain YYYY-MM-DD dates; no filter value can carry a comma. Omit security_type to see the names on offer.',
+    thrownBy: 'service',
+  },
+  {
+    reason: 'upstream_schema_changed',
+    code: JsonRpcErrorCode.InternalError,
+    when: 'The average-interest-rates endpoint no longer has a field this tool requests, or its response no longer lists a field this tool reads — the API renamed or dropped it',
+    recovery: 'Query /v2/accounting/od/avg_interest_rates with treasury_query_dataset; omit fields to see the fields it has now.',
+    thrownBy: 'service',
+  },
+]
+```
 
 **Empty-result guidance.** The notice names only the constraint that was actually the problem, and reads the vocabulary off the data rather than restating one written here. Where a date range was sent, a pair of one-row probes (same `security_desc` filter, no date bound, sorted each way) separates *absent from this range* from *absent from the dataset*: when the type has records, the notice reports its count and date span so "widen the range" is actionable and never claims a real type does not exist; when it has none, the name is the fault and the range is not mentioned. In that case the most recent month is fetched and its security types are listed.
 
 The probes are gated on a range having been sent, not on the mode. Latest mode sends none, and neither does a series given neither bound — and there the main fetch has already run that exact unbounded filter and matched nothing, so the probes could only return the same empty answer. Both cases skip straight to naming the current month's types. Every probe is on the empty path, so a matching query costs one upstream call as before.
+
+The month listing is the one optional request: it runs after the answer (an empty match) and the verdict on the name are in hand, and adds only the names on offer. When it fails with `Timeout` or `ServiceUnavailable`, the call returns the empty answer with a notice that says the list could not be fetched and why, pointing at `mode=latest` with no `security_type` (Decision 20). The caller's cancellation still rethrows, and any other failure, `upstream_schema_changed` included, ends the call. The span probes decide which guidance applies, so a stalled probe still fails the call on the shared budget. The probes select only `record_date` and the listing `record_date` and `security_desc`, so the labels check of Decision 19 reads each against those fields alone.
 
 **Annotations:** `readOnlyHint: true`, `idempotentHint: true`
 
@@ -424,6 +466,20 @@ errors: [
     when: 'One or more requested countries have no records — API returns HTTP 200 with empty data[]; service layer must detect total-count: 0 or a partial match (some countries returned, some absent)',
     recovery: 'Use mode=latest without countries filter to list all available country names, or check spelling — country names must match exactly (e.g., "Korea" not "South Korea").',
   },
+  {
+    reason: 'invalid_filter',
+    code: JsonRpcErrorCode.ValidationError,
+    when: 'A countries entry, start_date, or end_date contains a comma, which the API would read as the start of another filter condition — the call is refused before any request',
+    recovery: 'Send each countries entry as one exact country name, listing several countries as separate entries, and start_date/end_date as plain YYYY-MM-DD dates; no filter value can carry a comma.',
+    thrownBy: 'service',
+  },
+  {
+    reason: 'upstream_schema_changed',
+    code: JsonRpcErrorCode.InternalError,
+    when: 'The exchange-rate endpoint no longer has a field this tool requests, or its response no longer lists a field this tool reads — the API renamed or dropped it',
+    recovery: 'Query /v1/accounting/od/rates_of_exchange with treasury_query_dataset; omit fields to see the fields it has now.',
+    thrownBy: 'service',
+  },
 ]
 ```
 
@@ -453,7 +509,7 @@ z.object({
     source_tool: z.string().describe('Treasury tool that produced this dataframe.'),
     query_params: z.record(z.string(), z.unknown()).describe('Input parameters the source tool was called with.'),
     created_at: z.string(),
-    expires_at: z.string(),
+    expires_at: z.string().describe('ISO 8601 time this table expires, fixed when it was staged; queries do not extend it. A server restart, or the shared canvas reaching its maximum lifetime, can remove the table sooner.'),
     row_count: z.number(),
     truncated: z.boolean(),
     max_rows: z.number().optional(),
@@ -480,6 +536,10 @@ errors: [
 
 **Annotations:** `readOnlyHint: true`, `idempotentHint: true`, `openWorldHint: false`
 
+**Canvas lifecycle.** Each tenant has one shared canvas, resolved through the framework's `DataCanvas.acquireShared` on the `canvas-id` state key, so concurrent first stagings converge on one canvas instead of each minting its own and stranding the others' tables. Staging and `treasury_dataframe_query` mint the canvas when none is live; describe, drop, and the expiry sweep never do, and with no live canvas describe lists nothing. When no live canvas holds the tenant's tables (the absolute cap, or a restart over persistent storage), every `df-meta/` record is deleted by key: past the cap the stored id has expired with the canvas, so the dead id is not always known. Describe also deletes any record whose table is no longer on the live canvas, reading the records before the canvas's table list so a table committing in between keeps its record. A table's `expires_at` is fixed at staging and is the latest it can remain; the canvas's cap or a restart can end it sooner.
+
+**Column types.** A table a data tool stages is registered under the schema the framework infers from its rows: every Treasury value is a string, so every column is `VARCHAR`, and every inferred column is nullable. A `register_as` table takes its types from the SELECT that built it, so after the CTAS the bridge reads the new table back with `CanvasInstance.describe` and records those columns, `engineType` included. Describe reports a column's `engineType` — the type as DuckDB spells it (`DECIMAL(20,2)`, `INTEGER`) — when the record carries one, and the `type` tag otherwise. The tag is a registration approximation that maps `DECIMAL` and other types outside its list to `VARCHAR`, which would send a caller to CAST a column that is already numeric; for staged tables it is exact. A table dropped between the CTAS and that read fails the call as `missing_table`, with no record written.
+
 ---
 
 ### `treasury_dataframe_query`
@@ -490,13 +550,13 @@ errors: [
 ```ts
 z.object({
   sql: z.string().min(1)
-    .describe('Single-statement SELECT against df_<id> tables. All values in Treasury dataframes are VARCHAR (strings) per the API contract — CAST to DECIMAL or DATE for arithmetic and date comparisons. Example: SELECT record_date, CAST(tot_pub_debt_out_amt AS DECIMAL) AS debt FROM df_xxxxx ORDER BY record_date DESC LIMIT 10.'),
+    .describe('Single-statement SELECT against df_<id> tables. Tables staged from Treasury API rows hold every value as VARCHAR (strings), per the API contract — CAST to DECIMAL or DATE for arithmetic and date comparisons; a register_as table keeps the column types its SELECT produced. Example: SELECT record_date, CAST(tot_pub_debt_out_amt AS DECIMAL) AS debt FROM df_xxxxx ORDER BY record_date DESC LIMIT 10.'),
   register_as: z.string().optional()
-    .describe('Persist the result as a new dataframe under this exact name, to chain analyses. The name is used verbatim — any name works, and a df_ prefix keeps it consistent with the tables the data tools mint. Echoed back in registered_as.'),
+    .describe('Persist the result as a new dataframe under this exact name, to chain analyses. Use a plain identifier (letters, digits, underscores, starting with a letter or underscore); a df_ prefix keeps it consistent with the tables the data tools mint, and a DuckDB system-catalog or metadata-view name (duckdb_tables, pg_tables, information_schema, …) is refused before anything is staged. Echoed back in registered_as.'),
   preview: z.number().int().min(0).max(10000).optional()
     .describe('Rows in the immediate response. Defaults to row_limit and may not exceed it. Set lower when using register_as.'),
   row_limit: z.number().int().min(1).max(10000).default(1000)
-    .describe('Hard cap on rows in the response. Default 1000, max 10000.'),
+    .describe('Hard cap on rows the query may produce. Default 1000, max 10000. A query matching more rows than this stops at the cap and row_count_capped comes back true — raise it, or use register_as to materialize the whole result.'),
 })
 ```
 
@@ -568,7 +628,7 @@ errors: [
 
 `missing_table` and `invalid_query_bounds` originate in the framework canvas layer, whose own messages and hints name in-process methods (`registerTable()`, `describe()`) and framework field names (`rowLimit`). The handler reroutes both through `ctx.fail`, replacing message and hint with this server's tool and parameter names — an MCP client can reach those, and cannot reach the framework's.
 
-> **Implementation note (mirrors secedgar gold standard):** Use `ctx.enrich.notice(...)` in the handler for empty-result and row-cap conditions — not `format()` text — so the notice reaches both `structuredContent` (Claude Code) and `content[]` (Claude Desktop) automatically. Check `result.rowCount === 0`, then `result.truncated` (the `row_limit` cap), then `result.rowCount > result.rows.length` (the `preview` cap) after executing — in that order, since a `row_limit`-capped result satisfies neither of the arithmetic tests. `register_as` is forwarded to the canvas provider verbatim: neither this server's bridge nor the framework's `CanvasInstance.query()` checks it against the `df_XXXXX_XXXXX` shape, so its description must not assert one.
+> **Implementation note (mirrors secedgar gold standard):** Use `ctx.enrich.notice(...)` in the handler for empty-result and row-cap conditions — not `format()` text — so the notice reaches both `structuredContent` (Claude Code) and `content[]` (Claude Desktop) automatically. Check `result.rowCount === 0`, then `result.truncated` (the `row_limit` cap), then `result.rowCount > result.rows.length` (the `preview` cap) after executing — in that order, since a `row_limit`-capped result satisfies neither of the arithmetic tests. `register_as` is forwarded to the canvas provider verbatim: neither this server's bridge nor the framework's `CanvasInstance.query()` checks it against the `df_XXXXX_XXXXX` shape, so its description must not assert one. The bridge does refuse a name the system-catalog deny would refuse in SQL (`duckdb_tables`, `pg_class`, …) with `system_catalog_access`, before any canvas is resolved: such a table is unreachable, and `duckdb_columns` / `duckdb_views` also break the canvas's own describe and later `register_as` calls for the tenant.
 
 **Annotations:** `readOnlyHint: true`, `idempotentHint: true`, `openWorldHint: false`
 
@@ -596,14 +656,14 @@ GET {base}/{endpoint}
   ?fields=field1,field2,...
   &filter=col:op:value[,col:op:value]
   &sort=[-]fieldname
-  &page[size]=N        # default 100; 10,000 max (400 above it)
+  &page[size]=N        # default 100; 10,000 max (404 above it)
   &page[number]=N      # 1-indexed
 ```
 
 **Filter operators (verified):** `eq`, `gt`, `gte`, `lt`, `lte`, `in`
 - `in` syntax: `field:in:(val1,val2,val3)`
 - Multiple filters: comma-separated in one `filter=` parameter
-- Invalid operator returns `{"error":"Invalid Query Param","message":"Invalid query parameter: Operator ':xxx:' is not supported."}`
+- Invalid operator returns the plain `404 Not Found` every rejected query gets (it once returned `{"error":"Invalid Query Param","message":"Invalid query parameter: Operator ':xxx:' is not supported."}`)
 
 **Response envelope:**
 ```json
@@ -626,12 +686,16 @@ GET {base}/{endpoint}
 
 **Note:** `links` values are query-string fragments, not full URLs — `self`, `first`, etc. strip the base and endpoint. Pagination must be reconstructed from `meta["total-count"]` and `meta["total-pages"]`.
 
-**Error shapes (verified live):**
-- **404 (invalid endpoint path):** Returns HTML (not JSON). Service layer must detect `Content-Type: text/html` and convert to `invalid_endpoint` error.
-- **400 (bad field, operator, or out-of-range page):** Returns JSON `{"error":"Invalid Query Param","message":"..."}` — parse as a structured validation error, not an HTML page. Three message patterns are recognized: `Field 'X' does not exist` → `invalid_field`, `Operator ':op:' is not supported` → `invalid_filter`, `Page #N is out of range` → `page_out_of_range`.
+**Error shapes (verified live 2026-11-16):**
+- **404 `text/plain` `Not Found`:** a missing path, and every rejected query on an existing one — an unknown name in `fields`, a filter, or `sort` (a `+` prefix or surrounding whitespace included; only `-` is stripped), a sort field `fields` leaves out (`fields=record_date&sort=-tot_pub_debt_out_amt`; the same query with `tot_pub_debt_out_amt` selected answers 200), an unsupported operator, an empty filter value, a page past the end, `page[size]` above 10,000. A filter field need not be selected: `fields=record_date&filter=tot_pub_debt_out_amt:gt:1` answers 200. A bare `?page[size]=1` on an existing path answers 200 with `meta.labels` keyed by every field (a filtered query that matches nothing carries the full `meta.labels` too). Classification: Decision 16.
+- **Malformed filter values are not rejected:** `record_date:gte:notadate`, an extra colon, parentheses around an `eq` value, `in` without parentheses — 200 with zero rows. Duplicate names in `fields` are accepted.
+- **A comma inside a filter value starts another condition:** `record_date:eq:2024-01-03,src_line_nbr:eq:1` answers 200 with the one row matching both, and `record_date:eq:2024-01-03,nope:eq:1` answers 404 for the unknown `nope`. A comma that begins no condition (`record_date:eq:2024-01-02,2024-01-03`) matches nothing, and `tot_pub_debt_out_amt:gt:1,000` answers 503 (verified live 2026-11-16). `fetchPage` refuses any comma in a filter value before sending, so none of these reaches the API.
+- **A non-number on a numeric field answers 503 `text/html`:** `tot_pub_debt_out_amt:gt:abc` and `src_line_nbr:eq:abc` return the CDN's outage page, which retries as any 5xx does; a non-number on a year field (`record_fiscal_year:eq:abc`) matches nothing.
+- **503 `text/html`:** outage page from the CDN — retryable `ServiceUnavailable`, like any 5xx.
+- **400 JSON `{"error":"Invalid Query Param","message":"..."}`:** the earlier rejection shape, no longer sent. Its three message patterns are still classified if it returns: `Field 'X' does not exist` → `invalid_field`, `Operator ':op:' is not supported` → `invalid_filter`, `Page #N is out of range` → `page_out_of_range`. That body names the unknown field without listing the endpoint's fields, so its `invalid_field` hint sends the caller to a bare `treasury_query_dataset` call, whose `field_labels` and table header name every field.
 - **Empty results (date/country not found):** Returns `200 OK` with `{"data":[],"meta":{"total-count":0,...}}`. NOT a 4xx. Service layer must check `meta["total-count"] === 0` to surface domain-level not-found conditions.
 
-**Retry classification.** The status class decides retryability; the message patterns above only pick a more specific reason. A 4xx carries the framework's `httpStatusToErrorCode` mapping, which `withRetry` treats as terminal — except 408/425/429, where waiting is the remedy. Everything else stays `ServiceUnavailable` and keeps its retry budget. Message matching must never be what decides whether to retry: a fourth 400 message pattern nobody has seen yet still fails fast.
+**Retry classification.** The status class decides retryability; content type never selects a reason, and the message patterns above only pick a more specific one. A 4xx carries the framework's `httpStatusToErrorCode` mapping, which `withRetry` treats as terminal — except 408/425/429, where waiting is the remedy. A 5xx, an outage page included, is `ServiceUnavailable` with `retryable: true` and keeps its retry budget. Message matching must never be what decides whether to retry: a fourth 400 message pattern nobody has seen yet still fails fast. The whole ladder runs inside one deadline shared by every request of the tool call (Decision 17).
 
 **Null values:** Returned as the string `"null"`. All value conversion must be defensive (`val === "null" ? null : val`).
 
@@ -665,7 +729,7 @@ One API call covers most series queries — 10,000 is the API's hard `page[size]
 
 | # | Action | Purpose |
 |:--|:-------|:--------|
-| 1 | Validate `endpoint` against the embedded catalog (optional, warn-not-block) | Catch typos early |
+| 1 | Normalize names and the endpoint path (Decision 18), then check `endpoint` against the embedded catalog (warn, not block) | Catch typos early |
 | 2 | Build `fields=`, `filter=`, `sort=` from structured inputs | Translation layer |
 | 3 | `GET {endpoint}?...&page[size]={page_size}&page[number]={page_number}` | Fetch one page |
 | 4 | If `canvas_id` is non-empty and the page has rows: register via `canvasBridge.registerDataframe()` | Canvas registration |
@@ -701,13 +765,13 @@ One API call covers most series queries — 10,000 is the API's hard `page[size]
 
 **Rationale:** Treasury data is inherently time-series. Debt history from 1993 is ~8,400 rows and grows every business day; full exchange rate history is ~19,000 rows; a multi-security multi-year interest rate series can be 4,000+ rows. These are non-trivial to reason about inline but straightforward with SQL (`SELECT record_date, CAST(tot_pub_debt_out_amt AS DECIMAL) AS debt FROM df_xxxxx WHERE record_date >= '2020-01-01' ORDER BY record_date`). DataCanvas earns its keep here. However, for typical queries (latest debt, this quarter's FX rates, current month's interest rates), results are small enough to inline — canvas is additive, not required.
 
-**Implementation note (as built):** registration goes through this server's own `canvasBridge.registerDataframe`, not `api-canvas`'s `spillover()` helper — the bridge owns `df_XXXXX_XXXXX` minting, the all-nullable schema Treasury's sparse "null" strings require, and per-table TTL and provenance in `ctx.state`. Staging triggers: the convenience tools stage on a non-empty `canvas_id` **or** on a row threshold (500 for debt and exchange rates, 200 for interest rates); `treasury_query_dataset` stages only on an explicit `canvas_id`, since the generic tool cannot judge result size without a count query first.
+**Implementation note (as built):** registration goes through this server's own `canvasBridge.registerDataframe`, not `api-canvas`'s `spillover()` helper — the bridge owns `df_XXXXX_XXXXX` minting, the framework's `inferSchemaFromRows` schema, which makes every column nullable as Treasury's sparse "null" strings require, and per-table TTL and provenance in `ctx.state`. Staging triggers: the convenience tools stage on a non-empty `canvas_id` **or** on a row threshold (500 for debt and exchange rates, 200 for interest rates); `treasury_query_dataset` stages only on an explicit `canvas_id`, since the generic tool cannot judge result size without a count query first.
 
 ### 3. No programmatic catalog API — embedded static catalog
 
 **Decision:** `treasury_list_datasets` serves from an embedded `datasets.ts` map, not a live API call.
 
-**Rationale:** The Treasury API has no `/datasets` endpoint (verified — returns 404 HTML). The catalog is available only via the HTML documentation page. Embedding is the only option, and serving it costs no round trip. What embedding does not buy is accuracy: the catalog is the documented first step, and the recovery hints on `invalid_endpoint` and `invalid_field` both point back at it, so a stale entry hands the caller a value that fails and then routes them to the source of the failure. `bun run verify:catalog` closes that loop — it probes every entry against the live API and fails on a path that does not answer or a field the endpoint does not have. It is a script rather than a test because it needs the network; the catalog's own shape (unique paths, query-legal field names, `record_date` on every entry) is pinned offline in the `treasury_list_datasets` suite.
+**Rationale:** The Treasury API has no `/datasets` endpoint (verified — returns 404). The catalog is available only via the HTML documentation page. Embedding is the only option, and serving it costs no round trip. What embedding does not buy is accuracy: the catalog is the documented first step, and the recovery hint on `invalid_endpoint` points back at it, so a stale entry hands the caller a value that fails and then routes them to the source of the failure. (`invalid_field` lists the endpoint's live fields instead.) `bun run verify:catalog` closes that loop — it probes every entry against the live API and fails on a path that does not answer or a field the endpoint does not have. It is a script rather than a test because it needs the network; the catalog's own shape (unique paths, query-legal field names, `record_date` on every entry) is pinned offline in the `treasury_list_datasets` suite.
 
 ### 4. Exchange rate disambiguation — statutory vs. market rates
 
@@ -719,7 +783,7 @@ One API call covers most series queries — 10,000 is the API's hard `page[size]
 
 **Decision:** The six confirmed operators are the complete set. No `ne` (not equal), no `contains`, no regex.
 
-**Rationale:** Verified by probing — an invalid operator returns `{"error":"Invalid Query Param","message":"Invalid query parameter: Operator ':xxx:' is not supported."}`. The official docs list the same six. The Zod enum on `treasury_query_dataset.filters[].operator` should be constrained to exactly these six.
+**Rationale:** Verified by probing — an invalid operator is rejected (now with the plain 404 every rejected query gets; originally `{"error":"Invalid Query Param","message":"Invalid query parameter: Operator ':xxx:' is not supported."}`). The official docs list the same six. The Zod enum on `treasury_query_dataset.filters[].operator` should be constrained to exactly these six.
 
 ### 6. All API values are strings — no server-side coercion
 
@@ -737,19 +801,19 @@ One API call covers most series queries — 10,000 is the API's hard `page[size]
 
 **Decision:** The `no_data_for_date` and `country_not_found` errors are detected by checking `meta["total-count"] === 0` in a 200 OK response, not by catching an HTTP 404 or 4xx.
 
-**Rationale:** Verified live: filtering for a weekend date or an unrecognized country returns `HTTP 200` with `{"data":[],"meta":{"total-count":0,...}}`. The API only returns 404 HTML for genuinely missing endpoint paths (`invalid_endpoint`), and 400 JSON for bad fields/operators. Domain-level "not found" conditions always come back as successful responses with empty data. The service layer must handle three distinct error shapes: (1) HTML on 404 → `invalid_endpoint`, (2) JSON error object on 400 → `invalid_field`/`invalid_filter`, (3) `200 OK` with `total-count: 0` → domain not-found per caller.
+**Rationale:** Verified live: filtering for a weekend date or an unrecognized country returns `HTTP 200` with `{"data":[],"meta":{"total-count":0,...}}`. The API returns 404 for a missing endpoint path and for a rejected query alike — a bad field, operator, or page — and the service tells them apart with a bare probe (Decision 16). Domain-level "not found" conditions always come back as successful responses with empty data. The service layer handles three outcomes: (1) a 404 → `invalid_endpoint`, `invalid_field`, `sort_field_not_selected`, `page_out_of_range`, or `invalid_filter` by probe, (2) a 5xx → retryable `ServiceUnavailable`, (3) `200 OK` with `total-count: 0` → domain not-found per caller.
 
 ### 9. `treasury_list_datasets` uses embedded catalog, not runtime validation of `treasury_query_dataset` endpoint input
 
 **Decision:** `treasury_query_dataset` does a soft catalog check (warn in enrichment if endpoint not found in catalog) but does not hard-block on unrecognized endpoints.
 
-**Rationale:** The catalog might be stale if Treasury adds new endpoints before a server update. Hard-blocking would break access to new endpoints. Instead: validate against the catalog for known typos, surface a warning notice, but let the request through. The API will return its own 404 HTML if the endpoint is genuinely invalid — the service layer converts that to an `invalid_endpoint` error.
+**Rationale:** The catalog might be stale if Treasury adds new endpoints before a server update. Hard-blocking would break access to new endpoints. Instead: validate against the catalog for known typos, surface a warning notice, but let the request through. The API will return its own 404 if the endpoint is genuinely invalid — the service layer converts that to an `invalid_endpoint` error.
 
 ### 10. Retryability keys on the HTTP status class, never on the error message
 
-**Decision:** `FiscalDataService.fetchPage` derives the thrown error's code from the response status (`httpStatusToErrorCode` for 4xx, `ServiceUnavailable` otherwise) and lets `withRetry`'s code-based predicate follow from it. Message pattern matching only selects a more specific `reason`.
+**Decision:** `FiscalDataService.fetchPage` derives the thrown error's code from the response status (`httpStatusToErrorCode` for 4xx, `ServiceUnavailable` otherwise) and lets `withRetry`'s code-based predicate follow from it. Message pattern matching only selects a more specific `reason`, and content type selects nothing: an HTML 503 outage page once read as `invalid_endpoint` and was never retried.
 
-**Rationale:** The 400 message patterns are an open set — Fiscal Data returns one for bad fields, one for bad operators, one for out-of-range pages, and there is no published list. When retryability was decided by which patterns matched, every unmatched 400 defaulted to `ServiceUnavailable` and burned the full retry budget on a rejection the API would never reverse; the caller waited seconds for a verdict available on the first response and then read `(failed after 4 attempts)`, which reads like an upstream flake. Keying on the status class means an unrecognized 400 fails fast on its own, so adding a fourth message pattern is a reason refinement rather than a retry fix.
+**Rationale:** The 400 message patterns are an open set — Fiscal Data returned one for bad fields, one for bad operators, one for out-of-range pages, and there is no published list. When retryability was decided by which patterns matched, every unmatched 400 defaulted to `ServiceUnavailable` and burned the full retry budget on a rejection the API would never reverse; the caller waited seconds for a verdict available on the first response and then read `(failed after 4 attempts)`, which reads like an upstream flake. Keying on the status class means an unrecognized 400 fails fast on its own, so adding a fourth message pattern is a reason refinement rather than a retry fix.
 
 ### 11. Recovery hints name only what the caller can reach
 
@@ -779,4 +843,36 @@ One API call covers most series queries — 10,000 is the API's hard `page[size]
 
 **Decision:** Each entry lists the endpoint's full field set. `treasury_offset_program` (42 fields) and `auctions_query` (114) carry a curated subset instead, and say so in the description.
 
-**Rationale:** Under-listing is the milder half of catalog drift — `fields` is optional on `treasury_query_dataset`, so an omitted name costs discoverability rather than a failed call — but it is what sends a caller to `invalid_field` guessing at a name the endpoint has. Mirroring also keeps the verifier's informational output meaningful: with the full set listed, a new upstream column surfaces as the one unlisted-field finding in the report instead of vanishing into standing noise from every entry at once. The two exceptions earn it — 114 fields would dominate a `treasury_list_datasets` response that has sixteen other entries to carry.
+**Rationale:** Under-listing is the milder half of catalog drift — `fields` is optional on `treasury_query_dataset`, so an omitted name costs discoverability rather than a failed call — but a caller after an unlisted field has to find it first, by a bare `treasury_query_dataset` call or by a failed one whose `invalid_field` lists every name the endpoint has. Mirroring also keeps the verifier's informational output meaningful: with the full set listed, a new upstream column surfaces as the one unlisted-field finding in the report instead of vanishing into standing noise from every entry at once. The two exceptions earn it — 114 fields would dominate a `treasury_list_datasets` response that has sixteen other entries to carry.
+
+### 16. A 404 on a query is classified by one bare probe
+
+**Decision:** When a request carrying `fields`, a filter, `sort`, or `page_number` > 1 gets a 404, `fetchPage` sends one bare request to the same path (`page[size]=1`, nothing else) and classifies from its answer. A 404 is `invalid_endpoint`. A 200 lists every field in `meta.labels`, and the verdicts run in order from there. A requested name absent from it is `invalid_field`, whose message names each unknown name and lists every field. With every name present, a sort field the query's `fields` leaves out is `sort_field_not_selected`, whose message names each one. Then the rejection is `page_out_of_range` past page 1, and on page 1 `invalid_filter` when the query carries a filter or sort. A page-1 query of `fields` alone, every name present, carries nothing the API rejects, so its 404 is a retryable `ServiceUnavailable`. A probe that cannot answer — any other status, an HTML or unparseable body, a network error, its own timeout — is a retryable `ServiceUnavailable` that says the query was rejected, never `invalid_endpoint`. A success never probes, and neither does a 404 on a request carrying none of those parameters: that one is `invalid_endpoint` directly.
+
+**Rationale:** The API answers every rejected query with the same `404 text/plain` it gives a missing path, so the status alone reported existing endpoints as nonexistent and routed callers back to a path they already held. A bare request is the cheapest question that separates the two — about 0.3 s, paid only on a failure that already cost a round trip — and its `meta.labels` covers fields the catalog omits and endpoints it does not carry. The order runs from the most specific fault to the least. An unknown name is checked first because the sort check compares names against `fields` and would otherwise blame a misspelled sort field for not being selected. The sort check comes before the page check because a later page of a query the API refuses outright is not past any end, and before `invalid_filter`, whose hint would send the caller after filter values that are fine. Malformed filter values come back 200 with zero rows rather than rejected, so with every name valid and every sort field selected on page 1, what remains is the filter or sort expression itself, which the probe-route hint tells the caller to find by bisection: resend without sort, then with one filter at a time. A comma inside a value never gets this far, since `fetchPage` refuses it before sending (Decision 18). A later page that is really a malformed filter reads as `page_out_of_range`; its hint leads the caller to page 1, where the same query surfaces as `invalid_filter`.
+
+### 17. One budget bounds every request a tool call makes
+
+**Decision:** Every attempt, backoff, and probe of every Fiscal Data request one tool call makes runs inside a single 50 s budget. `treasury_get_debt`, `treasury_get_interest_rates`, and `treasury_get_exchange_rates` read the clock as their handler begins and bind that instant once, in the `createEndpointFetcher` request function every request goes through, which passes it to `fetchPage` as `budgetStart`; `fetchPage` hands `withRetry` only what is left as its `deadlineMs`, and a call that finds nothing left fails at once as the same `Timeout` (`reason: 'retry_deadline_exceeded'`) without sending a request. `treasury_query_dataset` makes one request and passes no `budgetStart`, which starts the budget at that call. Each HTTP exchange — the query or the probe — keeps its own 30 s timer, and both run on the ladder's signal, which composes the deadline with the caller's. A caller cancellation passes through unchanged. A probe is never retried on its own: one that cannot answer fails its attempt, and the ladder repeats query and probe together within the same budget.
+
+A call that starts with part of the budget already spent names that spend in its expiry — `Fiscal Data request for endpoint "…" (29999ms into this tool call's 50000ms budget) exceeded its 20001ms retry deadline after 1 attempt.` — since the remainder alone reads as a per-request limit.
+
+**Rationale:** MCP SDK clients abandon a request at 60 s. Four 30 s attempts plus backoff came to more than two minutes, so a stalled upstream reached the caller as a transport timeout instead of this server's error, and a probe inside each attempt would only have lengthened it. A total budget is the one bound that an attempt count and a per-attempt timer cannot express between them; the 10 s left under 60 s covers the handler's own work and the transport. A budget per `fetchPage` call does not hold that bound for a tool that chains calls — a debt series walking pages, the exchange-rate probe for the newest quarter, the span probes and month listing behind an empty interest-rate match — because a stall on a later call ran its own 50 s on top of what the earlier ones spent: 80 s for a series whose fourth page stalled after three 10 s pages. The start instant travels as an explicit option rather than state keyed off the request context. Each convenience tool binds it once, in the per-call request function every request goes through (`createEndpointFetcher`, Decision 19), so no request can leave it out.
+
+### 18. `treasury_query_dataset` normalizes input that has one clear reading
+
+**Decision:** Before anything reads them, the handler trims each `fields` entry, each filter `field`, and each comma-separated `sort` term (keeping its `-`), and trims `endpoint` and adds a missing leading `/`. The catalog check, the request, the echoed `endpoint`, error data, and the staged table's provenance all carry the normalized values. Filter values pass through as sent, and nothing that changes which rows come back is rewritten: a sort field missing from `fields` fails as `sort_field_not_selected` rather than being added, because adding a field to a selection changes its distinct combinations. A filter value holding a comma is refused in `fetchPage` before any request, for every tool, as `invalid_filter` with `field` and `value` in `data`.
+
+**Rationale:** The API strips no whitespace from a name and the base URL has no trailing slash, so each of these inputs failed as something it was not. `v2/accounting/od/debt_to_penny` read as `invalid_endpoint`, and `sort: "record_date, -tot_pub_debt_out_amt"` failed as an unknown field named `" -tot_pub_debt_out_amt"`; replacing that with the listed name dropped the `-` and flipped the sort. Each input has one reading, so sending it is safe, where rejecting it would cost a round trip and invite a wrong repair. A comma in a filter value has no such reading: the API takes it as the start of another condition — `record_date:eq:2024-01-03,src_line_nbr:eq:1` returns the rows of a different query, `…,nope:eq:1` answers 404, `…:gt:1,000` answers 503 — and no live country, currency, or security name contains one, so refusing it before the request costs no real input.
+
+### 19. A convenience tool reads the service's rejections, and each answer's field list, as its own
+
+**Decision:** `treasury_get_debt`, `treasury_get_interest_rates`, and `treasury_get_exchange_rates` send every request through one per-call function built by `createEndpointFetcher` (`src/mcp-server/tools/endpoint-fetcher.ts`). It adds `budgetStart` (Decision 17), converts two service reasons with `{ cause }`, and checks every 200. The service's `invalid_field` becomes `upstream_schema_changed` (`InternalError`), carrying the service's message (the missing field, the endpoint, the fields it has now); the contract's recovery points at querying the endpoint through `treasury_query_dataset`. The service's pre-flight comma refusal (Decision 18), an `invalid_filter` whose `data` names the filter `field` and `value`, becomes the tool's `invalid_filter` with `data: { endpoint, input, value }`, where `input` is the parameter the value came from (`date`, `start_date`, `end_date`, `security_type`, or `countries`), and the message `<input> value "<value>" contains a comma, so the call was refused before any request: the API reads a comma inside a filter value as the start of another condition.` Every other failure passes through, the probe route's `invalid_filter` (no `field` in its data) included. On a 200, every field the request selected, or every field the tool reads from a row when it selected none, must be a key of `meta.labels`; any that is missing fails as `upstream_schema_changed` with `data: { endpoint }` and the message `Field "<name>" this tool reads is gone from endpoint "<endpoint>". The response lists N fields: <list>.`, ending `The response lists no fields.` when the labels are empty. Several missing fields read `Fields "<a>", "<b>" this tool reads are gone from endpoint "<endpoint>".` Both entries carry `thrownBy: 'service'` in each contract, because the throw sits in the shared function below the handler the contract lint reads.
+
+**Rationale:** Every field name, operator, and sort term these tools send is fixed in their source; the caller supplies only values. The service's hints are written for `treasury_query_dataset`, whose caller chose the names, and here they sent a caller after a field or an expression they never wrote. An unknown field is upstream drift, which no rephrasing fixes. A comma is the one value the API cannot take: it reads a comma inside a value as the start of another condition, so `security_type: "Treasury Bills,record_date:gte:2026-01-01"` came back 200 with a silently narrowed match, and a tail naming an unknown field drew the 404. Both are now refused before any request, and the refusal names the input the caller wrote rather than the field the tool built from it. The labels check covers what a 404 cannot. A request that selects no fields never names the fields the tool reads, so a renamed or dropped one would come back 200 and read as an empty string in every row. `meta.labels` is present on every 200, an empty match included, and lists only the selected fields when a request selects some (verified live 2026-11-16), so the interest-rate span probes, which select `record_date` alone, are checked against that field only. The `?? ''` fallbacks in each row mapping stay: they model a row that omits a field its response still lists, a sparse `country_currency_desc` among them, which the labels check leaves alone.
+
+### 20. A lookup that only enriches an answer already in hand degrades rather than fails
+
+**Decision:** When a request that runs after the answer arrives and only adds guidance fails with `Timeout` or `ServiceUnavailable`, the tool returns the answer with a notice saying what could not be fetched and why. The caller's cancellation still rethrows; every other code ends the call. Requests that build the answer (main fetches, series pages, the exchange-rate newest-quarter probe, and the interest-rate span probes that pick the guidance) fail as before. Today the interest-rate month listing is the only request of the first kind.
+
+**Rationale:** Verified live: `{mode: latest, security_type: "Nope Bills"}` spent 29 s on the main query and 22 s on the listing, and ended as `Timeout retry_deadline_exceeded` at 50.0 s. That threw away an empty answer and a correct "no record carries that name" for want of a list of alternatives.

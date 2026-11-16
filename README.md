@@ -56,7 +56,7 @@ US Treasury Fiscal Data: the national debt, interest rates, exchange rates, and 
 ### `treasury_query_dataset` <sub>tool</sub>
 
 - Query an endpoint with `{ field, operator, value }` filters (`eq`, `gt`, `gte`, `lt`, `lte`, `in`), sort, and pagination: `page_size` 1–10000 (default 100), `page_number` starts at 1.
-- Returns rows, field labels, `total_count`, and `total_pages`; error reasons are `invalid_endpoint`, `invalid_field`, `invalid_filter`, and `page_out_of_range`.
+- Returns rows, field labels, `total_count`, and `total_pages`; a `fields` selection returns distinct rows, and the counts count those. Error reasons are `invalid_endpoint`, `invalid_field`, `invalid_filter`, `sort_field_not_selected`, and `page_out_of_range`.
 - Pass `canvas_id` to stage the page for SQL analysis; the returned `canvas_id` is the assigned table name.
 
 ---
@@ -90,7 +90,7 @@ US Treasury Fiscal Data: the national debt, interest rates, exchange rates, and 
 
 - Omit `name` to list the tenant's active dataframes, or supply one exact table name.
 - Returns provenance, created/expiry timestamps, row count, and column schema; `truncated` / `max_rows` disclose a capped source pull.
-- Table expiry defaults to 24h after staging, configurable with `CANVAS_TTL_MS`.
+- Table expiry defaults to 24h after staging, configurable with `CANVAS_TTL_MS`. Queries do not extend it, and a server restart or the shared canvas reaching its maximum lifetime (`CANVAS_ABSOLUTE_CAP_MS`, default 7 days) can remove a table sooner; describe lists only tables still on the canvas.
 
 ---
 
@@ -98,7 +98,7 @@ US Treasury Fiscal Data: the national debt, interest rates, exchange rates, and 
 
 - Accepts one read-only SELECT; `row_limit` defaults to 1000 (max 10000) and `preview` may not exceed it. System catalogs, external-file functions, and SQL mutations are denied.
 - Returns rows and `row_count_capped`; errors distinguish `canvas_unavailable`, `system_catalog_access`, `invalid_sql`, `missing_table`, and `invalid_query_bounds`.
-- `register_as` materializes the full result as a new dataframe with a fresh TTL.
+- `register_as` materializes the full result as a new dataframe with a fresh TTL. A name the system-catalog deny would refuse in SQL (`duckdb_tables`, `pg_class`, …) is refused with `system_catalog_access` before anything is staged.
 
 ---
 
@@ -114,7 +114,8 @@ Built on [`@cyanheads/mcp-ts-core`](https://github.com/cyanheads/mcp-ts-core): s
 
 Fiscal Data-specific:
 
-- All API values are strings; `"null"` means no value. Treasury dataframe columns are VARCHAR — CAST to DECIMAL or DATE for arithmetic and date comparisons. DataCanvas requires `CANVAS_PROVIDER_TYPE=duckdb`; configured canvas tools report `canvas_unavailable` otherwise.
+- All API values are strings; `"null"` means no value. Columns staged from Treasury API rows are VARCHAR — CAST to DECIMAL or DATE for arithmetic and date comparisons; a `register_as` table keeps the types its SELECT produced. DataCanvas requires `CANVAS_PROVIDER_TYPE=duckdb`; configured canvas tools report `canvas_unavailable` otherwise.
+- A filter value cannot contain a comma — the API reads one as the start of another condition — so every tool refuses it as `invalid_filter` before sending. The three convenience tools report `upstream_schema_changed` when the API renames or drops a field they read.
 - Curated catalog of 17 endpoints with field metadata — no discovery round-trip required; pass any endpoint path directly to `treasury_query_dataset` for datasets outside the catalog
 - Convenience tools for the three most-queried datasets — national debt, interest rates, exchange rates
 - DataCanvas integration: large pulls register as `df_<id>` dataframes queryable via DuckDB SQL, with automatic staging thresholds per tool
@@ -161,14 +162,14 @@ No API key is required. DataCanvas is enabled by default in npm and Docker insta
 | Variable | Description | Default |
 |:---------|:------------|:--------|
 | `CANVAS_PROVIDER_TYPE` | `duckdb` backs dataframe describe/query, and drop when enabled. With `none`, callable canvas tools return `canvas_unavailable`; drop stays off the tool list unless separately enabled. | `duckdb` (`none` in the desktop bundle) |
-| `CANVAS_TTL_MS` | Per-table TTL for DataCanvas dataframes in milliseconds. | `86400000` (24h) |
+| `CANVAS_TTL_MS` | Lifetime of each staged DataCanvas dataframe in milliseconds, fixed at staging. Also the shared canvas's idle TTL, so startup fails when it exceeds `CANVAS_ABSOLUTE_CAP_MS` (default 7 days). | `86400000` (24h) |
 | `TREASURY_DATAFRAME_DROP_ENABLED` | Register `treasury_dataframe_drop` as callable. Also requires `CANVAS_PROVIDER_TYPE=duckdb`. | `false` |
 | `MCP_TRANSPORT_TYPE` | Transport: `stdio` or `http`. | `stdio` |
 | `MCP_HTTP_PORT` | Port for HTTP server. | `3010` |
 | `MCP_SESSION_MODE` | HTTP session handling: `auto`, `stateful`, or `stateless`. Setting it overrides the server's own declaration; leaving it unset falls through to that declaration, not to the schema default. | `stateless` (declared in `src/index.ts`) |
 | `MCP_AUTH_MODE` | Auth mode: `none`, `jwt`, or `oauth`. | `none` |
 | `MCP_LOG_LEVEL` | Log level (`debug`, `info`, `notice`, `warning`, `error`). | `info` |
-| `LOGS_DIR` | Directory for log files (Node.js/Bun only). | `<project-root>/logs` |
+| `LOGS_DIR` | Directory for log files (Node.js/Bun only). A relative path resolves against the server's own package directory. | `<package-root>/logs` |
 | `LOG_TOOL_FAILURE_PAYLOADS` | Log failed-call arguments and results, redacted by key name. Secrets inside free-form values are not redacted. | `false` |
 | `LOG_TOOL_FAILURE_PAYLOAD_MAX_BYTES` | Byte cap for each logged failed-call payload. | `16384` |
 | `OTEL_ENABLED` | Enable [OpenTelemetry](https://github.com/cyanheads/mcp-ts-core/tree/main/docs/telemetry) spans and metrics. | `false` |
@@ -181,7 +182,7 @@ See [`.env.example`](./.env.example) for the full list of optional overrides.
 
 ### Local development
 
-Requires [Bun v1.4.0](https://bun.sh/) or higher to build; the installed server also runs on Node.js v24+.
+Requires [Bun v1.4.4](https://bun.sh/) or higher to build; the installed server also runs on Node.js v24+.
 
 ```sh
 git clone https://github.com/cyanheads/treasury-fiscaldata-mcp-server.git
@@ -234,8 +235,10 @@ Use the hosted endpoint, npm, or Docker for dataframe staging and SQL. Pass `can
 | `src/index.ts` | `createApp()` entry point — registers tools and inits services. |
 | `src/config/` | Server-specific environment variable parsing and validation with Zod. |
 | `src/mcp-server/tools/definitions/` | Tool definitions (`*.tool.ts`) — 5 data tools + 3 DataCanvas tools, including opt-in drop. |
+| `src/mcp-server/tools/markdown-encoding.ts` | Encoders that keep table cells, code spans, and notices intact through a Markdown parse. |
+| `src/mcp-server/tools/endpoint-fetcher.ts` | The per-call request function the three convenience tools send every request through: one fetch budget, their own rejection reasons, and a check that each answer still lists the fields they read. |
 | `src/services/fiscal-data/` | Treasury Fiscal Data API client, embedded endpoint catalog, and types. |
-| `src/services/canvas-bridge/` | Adapter over the framework DataCanvas: `df_<id>` minting, per-table TTL, system-catalog SQL deny. |
+| `src/services/canvas-bridge/` | Adapter over the framework DataCanvas: one shared canvas per tenant, `df_<id>` minting, fixed per-table expiry, `register_as` catalog-name refusal. |
 | `tests/` | Unit and integration tests mirroring `src/`. |
 
 ## Development guide
