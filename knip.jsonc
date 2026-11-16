@@ -4,13 +4,10 @@
   "project": ["src/**/*.ts", "scripts/**/*.ts", "tests/**/*.ts"],
   // Separately installed registry CLI; not an npm dependency.
   "ignoreBinaries": ["mcp-publisher"],
-  // Framework linter script's fallback when run inside the framework itself.
-  "ignoreUnresolved": ["../src/linter/validate.js"],
   "ignoreDependencies": [
     // Loaded by the framework's logging transport.
     "pino-pretty",
-    // Invoked through build/devcheck subprocesses and Bun's install.security config.
-    "tsx",
+    // Loaded through Bun's install.security config.
     "@socketsecurity/bun-security-scanner"
   ]
 }
