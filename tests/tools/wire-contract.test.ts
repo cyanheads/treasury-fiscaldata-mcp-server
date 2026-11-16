@@ -17,8 +17,10 @@
  * @module tests/tools/wire-contract.test
  */
 
+import { z } from '@cyanheads/mcp-ts-core';
+import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { runToolContract } from '@cyanheads/mcp-ts-core/testing';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@/services/canvas-bridge/canvas-bridge.js', () => ({
   getCanvasBridge: vi.fn(),
@@ -34,6 +36,7 @@ import { getInterestRatesTool } from '@/mcp-server/tools/definitions/get-interes
 import { listDatasetsTool } from '@/mcp-server/tools/definitions/list-datasets.tool.js';
 import { queryDatasetTool } from '@/mcp-server/tools/definitions/query-dataset.tool.js';
 import { getCanvasBridge } from '@/services/canvas-bridge/canvas-bridge.js';
+import { initFiscalDataService } from '@/services/fiscal-data/fiscal-data-service.js';
 
 /** Every tool this server registers, with the name it is called by. */
 const ALL_TOOLS = [
@@ -95,6 +98,65 @@ describe('tool input objects are strict', () => {
   });
 });
 
+/**
+ * Wording that promises a deadline moves with use. A negation such as "queries
+ * do not extend it" has no preposition or trigger after the verb, so it passes.
+ */
+const RENEWAL_CLAIM =
+  /sliding|renew|refresh|reset|touched|kept alive|keeps? (?:it |the table )?alive|extend(?:s|ed)? (?:on|by|with|each|every|whenever)\b|\b(?:on|with|after|by) (?:each|every) (?:query|use|read|access|call)/i;
+
+/**
+ * A staged table's deadline is set once, at staging, and the shared canvas can
+ * take the table with it earlier. A schema promising renewal by use tells a
+ * caller an actively queried table cannot expire under it.
+ */
+describe('advertised table expiry', () => {
+  it.each([
+    'refreshed on each query',
+    'a sliding expiry window',
+    'renewed by use',
+    'extended on every read',
+    'each query resets the deadline',
+    'touched on every access',
+    'the deadline moves with each query',
+    'kept alive while it is queried',
+  ])('recognizes %j as a renewal claim', (wording) => {
+    expect(wording).toMatch(RENEWAL_CLAIM);
+  });
+
+  it('passes the fixed-deadline wording, negation included', () => {
+    expect('fixed when it was staged; queries do not extend it').not.toMatch(RENEWAL_CLAIM);
+  });
+
+  it('describes expires_at on treasury_dataframe_describe as fixed at staging', () => {
+    const advertised = z
+      .object({
+        properties: z.object({
+          dataframes: z.object({
+            items: z.object({
+              properties: z.object({ expires_at: z.object({ description: z.string() }) }),
+            }),
+          }),
+        }),
+      })
+      .parse(z.toJSONSchema(dataframeDescribeTool.output));
+
+    expect(advertised.properties.dataframes.items.properties.expires_at.description).toBe(
+      'ISO 8601 time this table expires, fixed when it was staged; queries do not extend it. A server restart, or the shared canvas reaching its maximum lifetime, can remove the table sooner.',
+    );
+  });
+
+  it.each(ALL_TOOLS)('$name never advertises expiry as renewed by use', ({ def }) => {
+    const advertised = JSON.stringify([
+      def.description,
+      z.toJSONSchema(def.input),
+      z.toJSONSchema(def.output),
+    ]);
+
+    expect(advertised).not.toMatch(RENEWAL_CLAIM);
+  });
+});
+
 describe('`error` is reserved for the failure envelope', () => {
   it.each(ALL_TOOLS)('$name declares no `error` output field', ({ def }) => {
     expect(Object.keys(def.output.shape)).not.toContain('error');
@@ -142,8 +204,13 @@ describe('a declared failure reaches both surfaces', () => {
 
     expect(result.isError).toBe(true);
     const envelope = result.structuredContent as {
-      error?: { message?: string; data?: { reason?: string; recovery?: { hint?: string } } };
+      error?: {
+        code?: number;
+        message?: string;
+        data?: { reason?: string; recovery?: { hint?: string } };
+      };
     };
+    expect(envelope.error?.code).toBe(JsonRpcErrorCode.ServiceUnavailable);
     expect(envelope.error?.data?.reason).toBe('canvas_unavailable');
     expect(envelope.error?.data?.recovery?.hint).toContain('CANVAS_PROVIDER_TYPE=duckdb');
     expect(envelope.error?.message).toContain('DataCanvas is not configured');
@@ -167,6 +234,55 @@ describe('a declared failure reaches both surfaces', () => {
     const envelope = result.structuredContent as { error?: { data?: { reason?: string } } };
     expect(result.isError).toBe(true);
     expect(envelope.error?.data?.reason).toBe('canvas_unavailable');
+  });
+});
+
+/**
+ * The framework keeps a captured upstream error body off client envelopes, so
+ * the Fiscal Data API's own explanation reaches a caller only through the
+ * error message this server builds from it.
+ *
+ * The fixture is the API's legacy rejection shape — HTTP 400 with
+ * `{"error":"Invalid Query Param","message":"…"}`. The live API no longer
+ * answers an unknown field this way; the test keeps the server reading that
+ * shape should it come back.
+ */
+describe("the upstream's rejection text reaches both surfaces", () => {
+  const UPSTREAM_MESSAGE = "Invalid query parameter: Field 'field_does_not_exist' does not exist.";
+
+  beforeEach(() => {
+    initFiscalDataService();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() =>
+        Promise.resolve(
+          new Response(
+            JSON.stringify({ error: 'Invalid Query Param', message: UPSTREAM_MESSAGE }),
+            { status: 400, headers: { 'content-type': 'application/json' } },
+          ),
+        ),
+      ),
+    );
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('carries the API message in structuredContent and content[]', async () => {
+    const result = await runToolContract(queryDatasetTool, {
+      endpoint: '/v2/accounting/od/debt_to_penny',
+      fields: ['field_does_not_exist'],
+      page_size: 1,
+    });
+
+    expect(result.isError).toBe(true);
+    const envelope = result.structuredContent as {
+      error?: { message?: string; data?: { reason?: string } };
+    };
+    expect(envelope.error?.data?.reason).toBe('invalid_field');
+    expect(envelope.error?.message).toBe(`Invalid field: ${UPSTREAM_MESSAGE}`);
+    expect(contentText(result)).toContain(UPSTREAM_MESSAGE);
   });
 });
 

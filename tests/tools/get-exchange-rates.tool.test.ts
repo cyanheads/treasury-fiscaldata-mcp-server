@@ -3,9 +3,29 @@
  * @module tests/tools/get-exchange-rates.tool.test
  */
 
-import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { z } from '@cyanheads/mcp-ts-core';
+import { JsonRpcErrorCode, validationError } from '@cyanheads/mcp-ts-core/errors';
+import { createMockContext, getEnrichment, runToolContract } from '@cyanheads/mcp-ts-core/testing';
+import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from 'vitest';
 import type { FilterCondition, FiscalDataEnvelope } from '@/services/fiscal-data/types.js';
+import {
+  type Answer,
+  delayed,
+  envelopeBody,
+  hang,
+  jsonOk,
+  labelsFor,
+  labelsOk,
+  notFoundText,
+  unselectedSortTerms,
+} from '../helpers/fiscal-data-upstream.js';
+import {
+  contentText,
+  HOSTILE_VALUE,
+  readBlockquotes,
+  readParagraphs,
+  readTables,
+} from '../helpers/markdown-read-back.js';
 
 vi.mock('@/services/fiscal-data/fiscal-data-service.js', () => ({
   getFiscalDataService: vi.fn(),
@@ -21,6 +41,8 @@ import { getExchangeRatesTool } from '@/mcp-server/tools/definitions/get-exchang
 import { maybeRegisterDataframe } from '@/services/canvas-bridge/canvas-bridge.js';
 import { getFiscalDataService } from '@/services/fiscal-data/fiscal-data-service.js';
 
+const RATES_ENDPOINT = '/v1/accounting/od/rates_of_exchange';
+
 type RateRow = {
   record_date: string;
   country: string;
@@ -30,12 +52,28 @@ type RateRow = {
   effective_date: string;
 };
 
+/** Every field the endpoint has, as `meta.labels` keys them. */
+const RATES_FIELDS = [
+  'record_date',
+  'country',
+  'currency',
+  'country_currency_desc',
+  'exchange_rate',
+  'effective_date',
+];
+const RATES_LABELS = labelsFor(RATES_FIELDS);
+
+/** A response body as the API sends it: `meta.labels` keyed by every field. */
+function ratesBody(rows: Record<string, string>[], totalCount = rows.length): string {
+  return envelopeBody(rows, totalCount, RATES_FIELDS);
+}
+
 function makeRatesEnvelope(rows: RateRow[], totalCount = rows.length): FiscalDataEnvelope {
   return {
     data: rows as Record<string, string>[],
     meta: {
       count: rows.length,
-      labels: { country: 'Country', exchange_rate: 'Exchange Rate' },
+      labels: RATES_LABELS,
       dataTypes: { record_date: 'DATE', exchange_rate: 'NUMBER' },
       dataFormats: {},
       'total-count': totalCount,
@@ -189,14 +227,23 @@ function serveRows(rows: RateRow[], totalCount?: number) {
  * Serve `rows` the way the API does, honouring the bounds as well as the
  * filters: sort newest-first, apply country and record_date filters upstream,
  * then slice by page[size]/page[number]. A fake that ignores the bounds cannot
- * show a fetch that stopped short of its own match.
+ * show a fetch that stopped short of its own match. A page past the end rejects
+ * as the service does — the API answers it with the 404 every rejected query
+ * gets, never an empty 200 — and page 1 of an empty match is the one empty
+ * answer.
  */
 function pagedFetchPage(rows: RateRow[]) {
   return vi.fn(
     (
       _ctx: unknown,
       _endpoint: string,
-      opts: { filters?: FilterCondition[]; pageSize?: number; pageNumber?: number } = {},
+      opts: {
+        fields?: string[];
+        filters?: FilterCondition[];
+        pageSize?: number;
+        pageNumber?: number;
+        sort?: string;
+      } = {},
     ) => {
       let matched = [...rows].sort((a, b) => b.record_date.localeCompare(a.record_date));
       for (const f of opts.filters ?? []) {
@@ -212,8 +259,17 @@ function pagedFetchPage(rows: RateRow[]) {
           matched = matched.filter((r) => r.record_date <= value);
         }
       }
+      const pageNumber = opts.pageNumber ?? 1;
       const pageSize = opts.pageSize ?? 100;
-      const start = ((opts.pageNumber ?? 1) - 1) * pageSize;
+      const start = (pageNumber - 1) * pageSize;
+      if (pageNumber > 1 && start >= matched.length) {
+        return Promise.reject(
+          validationError(
+            `Page ${pageNumber} is past the last page of this query's results on endpoint "${RATES_ENDPOINT}".`,
+            { reason: 'page_out_of_range', endpoint: RATES_ENDPOINT },
+          ),
+        );
+      }
       return Promise.resolve(
         makeRatesEnvelope(matched.slice(start, start + pageSize), matched.length),
       );
@@ -306,8 +362,59 @@ describe('getExchangeRatesTool', () => {
       countries: ['Nonexistentland'],
     });
     await expect(getExchangeRatesTool.handler(input, ctx)).rejects.toMatchObject({
-      data: { reason: 'country_not_found' },
+      code: JsonRpcErrorCode.NotFound,
+      data: { reason: 'country_not_found', countries: ['Nonexistentland'] },
     });
+  });
+
+  it('drops blank country entries before filtering, the way form clients send them', async () => {
+    const fetchPage = usePaged(SAMPLE_ROWS);
+    const ctx = createMockContext({ errors: getExchangeRatesTool.errors });
+
+    const result = await getExchangeRatesTool.handler(
+      getExchangeRatesTool.input.parse({ mode: 'latest', countries: ['', 'Japan', ''] }),
+      ctx,
+    );
+
+    expect(fetchPage).toHaveBeenCalledTimes(1);
+    expect(fetchPage.mock.calls[0]?.[2]?.filters).toEqual([
+      { field: 'country', operator: 'eq', value: 'Japan' },
+    ]);
+    expect(result.rates.map((r) => r.country)).toEqual(['Japan']);
+  });
+
+  it.each<[string, Record<string, string>, string[]]>([
+    ['a whitespace-only start_date', { start_date: '  ', end_date: '2026-06-30' }, ['lte']],
+    ['a whitespace-only end_date', { start_date: '2025-01-01', end_date: '\t' }, ['gte']],
+    ['both bounds whitespace-only', { start_date: ' ', end_date: ' ' }, []],
+  ])('sends only the supplied series bounds for %s', async (_label, bounds, operators) => {
+    const fetchPage = usePaged(MIXED_DATE_ROWS);
+    const ctx = createMockContext({ errors: getExchangeRatesTool.errors });
+
+    await getExchangeRatesTool.handler(
+      getExchangeRatesTool.input.parse({ mode: 'series', ...bounds }),
+      ctx,
+    );
+
+    expect((fetchPage.mock.calls[0]?.[2]?.filters ?? []).map((f) => f.operator)).toEqual(operators);
+  });
+
+  it('lists every sort term in the fields of each request it sends', async () => {
+    const fetchPage = usePaged([...quarterRows('2026-06-30', 3), ...MIXED_DATE_ROWS]);
+    const ctx = createMockContext({ errors: getExchangeRatesTool.errors });
+
+    await getExchangeRatesTool.handler(getExchangeRatesTool.input.parse({ mode: 'latest' }), ctx);
+    await getExchangeRatesTool.handler(
+      getExchangeRatesTool.input.parse({ mode: 'latest', countries: ['Japan', 'Germany'] }),
+      ctx,
+    );
+    await getExchangeRatesTool.handler(
+      getExchangeRatesTool.input.parse({ mode: 'series', start_date: '2025-01-01' }),
+      ctx,
+    );
+
+    expect(fetchPage).toHaveBeenCalledTimes(4);
+    expect(unselectedSortTerms(fetchPage.mock.calls)).toEqual([]);
   });
 
   it('populates country_currency_desc as empty string for sparse upstream data', async () => {
@@ -408,6 +515,8 @@ describe('getExchangeRatesTool', () => {
       expect(result.as_of_date).toBe('2026-06-30');
       expect(result.rates[0]?.record_date).toBe('2026-06-30');
       expect(result.rates[0]?.effective_date).toBe('2026-07-15');
+      // The top-level effective_date is the as_of_date row's own, not the quarter end.
+      expect(result.effective_date).toBe('2026-07-15');
     });
 
     it('flags a series spanning quarters without a redundant notice', async () => {
@@ -803,6 +912,32 @@ describe('getExchangeRatesTool', () => {
       expect(result.total_records).toBe(12_000);
     });
 
+    /**
+     * A match that fills its last page exactly leaves nothing past it, and the
+     * API answers a page past the end with a 404, not an empty page — so the
+     * walk has to stop on the count it already holds rather than ask.
+     */
+    it.each([
+      [10_000, 1],
+      [20_000, 2],
+    ])('sends no past-end request when %i matches fill whole pages', async (total, pages) => {
+      const rows = [
+        ...quarterRows('2026-06-30', total / 2),
+        ...quarterRows('2026-03-31', total / 2, 'P'),
+      ];
+      const fetchPage = usePaged(rows);
+      const ctx = createMockContext({ errors: getExchangeRatesTool.errors });
+
+      const result = await getExchangeRatesTool.handler(
+        getExchangeRatesTool.input.parse({ mode: 'series', start_date: '2001-03-31' }),
+        ctx,
+      );
+
+      expect(fetchPage).toHaveBeenCalledTimes(pages);
+      expect(result.retrieved_records).toBe(total);
+      expect(result.total_records).toBe(total);
+    });
+
     it('reports what it retrieved when the match outruns the row bound', async () => {
       serveRows(MIXED_DATE_ROWS, 900);
       const ctx = createMockContext({ errors: getExchangeRatesTool.errors });
@@ -936,4 +1071,421 @@ describe('getExchangeRatesTool', () => {
     const text = (blocks[0] as { text: string }).text;
     expect(text).toContain('No records');
   });
+
+  /**
+   * `content[]` is read through a real Markdown parse and compared with the
+   * values `structuredContent` carries — a client renders the text, so the
+   * rendered value is the one that has to match.
+   */
+  describe('content[] read-back', () => {
+    type Result = Parameters<NonNullable<typeof getExchangeRatesTool.format>>[0];
+    type Rate = Result['rates'][number];
+
+    function render(rates: Rate[], mixed = false): string {
+      return contentText(
+        getExchangeRatesTool.format!({
+          as_of_date: rates[0]?.record_date ?? '',
+          effective_date: rates[0]?.effective_date ?? '',
+          mixed_record_dates: mixed,
+          rates,
+          total_records: rates.length,
+          note: 'Official reporting rates, not market rates.',
+        }),
+      );
+    }
+
+    const rowOf = (r: Rate) => [
+      r.country,
+      r.currency,
+      r.country_currency_desc,
+      r.exchange_rate,
+      r.record_date,
+      r.effective_date,
+    ];
+
+    it('reads every rate cell back as the row value, in its own column', () => {
+      const [table] = readTables(render(SAMPLE_ROWS));
+
+      expect(table?.rows).toEqual(SAMPLE_ROWS.map(rowOf));
+    });
+
+    it('reads the as-of and effective dates back after their labels', () => {
+      const [first] = SAMPLE_ROWS;
+
+      expect(readParagraphs(render(SAMPLE_ROWS))[0]).toContain(
+        `As of:⟦strong_close⟧ ${first?.record_date} (effective ${first?.effective_date})`,
+      );
+      expect(readParagraphs(render(SAMPLE_ROWS, true))[0]).toContain(
+        `Newest record date:⟦strong_close⟧ ${first?.record_date} (effective ${first?.effective_date})`,
+      );
+    });
+
+    const hostile: Rate[] = [
+      {
+        country: `${HOSTILE_VALUE} country`,
+        currency: `${HOSTILE_VALUE} currency`,
+        country_currency_desc: `${HOSTILE_VALUE} desc`,
+        exchange_rate: `${HOSTILE_VALUE} rate`,
+        record_date: `${HOSTILE_VALUE} record`,
+        effective_date: `${HOSTILE_VALUE} effective`,
+      },
+    ];
+
+    it('reads hostile rate cells back exactly, each in its own column', () => {
+      expect(readTables(render(hostile))[0]?.rows).toEqual(hostile.map(rowOf));
+    });
+
+    it('reads hostile dates back exactly after their labels', () => {
+      const [r] = hostile;
+      const dates = `${r?.record_date} (effective ${r?.effective_date})`;
+
+      expect(readParagraphs(render(hostile))[0]).toContain(`As of:⟦strong_close⟧ ${dates}\n`);
+      expect(readParagraphs(render(hostile, true))[0]).toContain(
+        `Newest record date:⟦strong_close⟧ ${dates}\n`,
+      );
+    });
+
+    /**
+     * The API reports a value it does not have as the string "null", and
+     * structuredContent carries that string as is; content[] renders it as the
+     * bare word, with nothing around it that would state a value.
+     */
+    it('reads the upstream "null" sentinel back in every cell as structuredContent carries it', async () => {
+      const nullRow: RateRow = {
+        record_date: '2026-06-30',
+        country: 'Null Land',
+        currency: 'null',
+        country_currency_desc: 'null',
+        exchange_rate: 'null',
+        effective_date: 'null',
+      };
+      serveRows([nullRow]);
+
+      const result = await runToolContract(getExchangeRatesTool, {
+        mode: 'latest',
+        countries: ['Null Land'],
+      });
+      const payload = result.structuredContent as Result;
+      const text = contentText(result.content);
+
+      expect(payload.rates).toEqual([nullRow]);
+      expect(payload.effective_date).toBe('null');
+      expect(readTables(text)[0]?.rows).toEqual([rowOf(nullRow)]);
+      expect(readParagraphs(text)[0]).toContain(
+        `As of:⟦strong_close⟧ ${payload.as_of_date} (effective ${payload.effective_date})\n`,
+      );
+    });
+
+    it('reads the notice back as structuredContent carries it, caller text included', async () => {
+      const missing = `${HOSTILE_VALUE} land`;
+      serveRows(SAMPLE_ROWS);
+
+      const result = await runToolContract(getExchangeRatesTool, {
+        mode: 'latest',
+        countries: ['Japan', missing],
+      });
+      const notice = (result.structuredContent as { notice: string }).notice;
+
+      expect(notice).toContain(missing);
+      expect(readBlockquotes(contentText(result.content))).toEqual([notice]);
+    });
+  });
+});
+
+/**
+ * The service module is mocked above; this block puts the real service back
+ * behind the accessor and stubs only `fetch`, so the tool's chained requests
+ * run through the service's own timers and its one 50 s budget.
+ */
+describe('chained requests through the real service, under one fetch budget', () => {
+  const BUDGET_MS = 50_000;
+
+  /** `count` rows of one quarter, as the API returns them. */
+  function rateRows(count: number) {
+    return Array.from({ length: count }, (_, i) => ({
+      record_date: '2026-06-30',
+      country: `Country ${i}`,
+      currency: 'Unit',
+      country_currency_desc: `Country ${i}-Unit`,
+      exchange_rate: '1.0',
+      effective_date: '2026-06-30',
+    }));
+  }
+
+  beforeEach(async () => {
+    vi.useFakeTimers();
+    const { FiscalDataService } = await vi.importActual<
+      typeof import('@/services/fiscal-data/fiscal-data-service.js')
+    >('@/services/fiscal-data/fiscal-data-service.js');
+    vi.mocked(getFiscalDataService).mockReturnValue(new FiscalDataService());
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  /**
+   * A budget per request would let the stalled one run its own 50 s after the
+   * first answered, past the client's 60 s cutoff.
+   */
+  it.each<[string, z.input<typeof getExchangeRatesTool.input>, (url: URL) => Answer]>([
+    [
+      'the latest-quarter probe answers after 25 s and the quarter fetch stalls',
+      { mode: 'latest' },
+      (url) =>
+        url.searchParams.get('page[size]') === '1'
+          ? delayed(25_000, () => jsonOk(ratesBody(rateRows(1), 19_000)))
+          : hang,
+    ],
+    [
+      'a series page answers after 22 s and the next page stalls',
+      { mode: 'series' },
+      (url) =>
+        url.searchParams.get('page[number]') === '1'
+          ? delayed(22_000, () => jsonOk(ratesBody(rateRows(10_000), 19_000)))
+          : hang,
+    ],
+  ])('settles at 50 s when %s', async (_label, input, route) => {
+    const fetchMock = vi.fn(
+      (request: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) =>
+        route(new URL(String(request)))(init),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    let settled = false;
+    const pending = runToolContract(getExchangeRatesTool, input).finally(() => {
+      settled = true;
+    });
+    await vi.advanceTimersByTimeAsync(BUDGET_MS - 1);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(settled).toBe(true);
+
+    const result = await pending;
+    const { error } = result.structuredContent as {
+      error: { code: number; message: string; data: { reason?: string } };
+    };
+    expect(error).toMatchObject({
+      code: JsonRpcErrorCode.Timeout,
+      data: { reason: 'retry_deadline_exceeded' },
+    });
+    expect(contentText(result.content)).toContain(error.message);
+  });
+});
+
+/**
+ * Every field name this tool sends — in a filter or `sort` — is fixed in its
+ * source, so an unknown-field rejection is the API's schema moving under it.
+ * The real service runs behind a stubbed `fetch`: any request carrying a query
+ * 404s, and the bare probe that classifies it lists the fields the endpoint has
+ * now.
+ */
+describe('a field the API dropped, through the real service', () => {
+  /** The endpoint after a rename: country is gone. */
+  const CURRENT_FIELDS = [
+    'record_date',
+    'country_name',
+    'currency',
+    'country_currency_desc',
+    'exchange_rate',
+    'effective_date',
+  ];
+  const HINT = `Query ${RATES_ENDPOINT} with treasury_query_dataset; omit fields to see the fields it has now.`;
+
+  beforeEach(async () => {
+    const { FiscalDataService } = await vi.importActual<
+      typeof import('@/services/fiscal-data/fiscal-data-service.js')
+    >('@/services/fiscal-data/fiscal-data-service.js');
+    vi.mocked(getFiscalDataService).mockReturnValue(new FiscalDataService());
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((request: Parameters<typeof fetch>[0]) => {
+        const params = new URL(String(request)).searchParams;
+        return Promise.resolve(
+          params.has('filter') || params.has('sort') ? notFoundText() : labelsOk(CURRENT_FIELDS),
+        );
+      }),
+    );
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it.each<[string, z.input<typeof getExchangeRatesTool.input>]>([
+    ['a latest-mode country filter', { mode: 'latest', countries: ['Japan'] }],
+    ['a series country filter', { mode: 'series', countries: ['Japan', 'Germany'] }],
+  ])('reports upstream_schema_changed for %s', async (_label, input) => {
+    const result = await runToolContract(getExchangeRatesTool, input);
+
+    expect(result.isError).toBe(true);
+    const { error } = result.structuredContent as {
+      error: { code: number; message: string; data: Record<string, unknown> };
+    };
+    expect(error).toMatchObject({
+      code: JsonRpcErrorCode.InternalError,
+      data: {
+        reason: 'upstream_schema_changed',
+        endpoint: RATES_ENDPOINT,
+        recovery: { hint: HINT },
+      },
+    });
+    expect(error.message).toContain('"country"');
+    expect(error.message).toContain(RATES_ENDPOINT);
+    expect(error.message).toContain(CURRENT_FIELDS.join(', '));
+
+    const paragraphs = readParagraphs(contentText(result.content));
+    expect(paragraphs).toContain(`Error: ${error.message}`);
+    expect(paragraphs).toContain(`Recovery: ${HINT}`);
+  });
+});
+
+/**
+ * The API reads a comma in a filter value as the start of another condition,
+ * so the service refuses such a value before any request. The caller wrote no
+ * filter, only countries and dates, so the refusal names the input and the
+ * value it carried — for a countries entry sent alone (`eq`) or among several
+ * (`in`), where the comma would split one name into two.
+ */
+describe('a comma in an input, through the real service', () => {
+  const HINT =
+    'Send each countries entry as one exact country name, listing several countries as separate entries, and start_date/end_date as plain YYYY-MM-DD dates; no filter value can carry a comma.';
+  let fetchMock: Mock;
+
+  beforeEach(async () => {
+    const { FiscalDataService } = await vi.importActual<
+      typeof import('@/services/fiscal-data/fiscal-data-service.js')
+    >('@/services/fiscal-data/fiscal-data-service.js');
+    vi.mocked(getFiscalDataService).mockReturnValue(new FiscalDataService());
+    fetchMock = vi.fn(() => Promise.resolve(jsonOk(ratesBody([]))));
+    vi.stubGlobal('fetch', fetchMock);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it.each<[string, string, string, z.input<typeof getExchangeRatesTool.input>]>([
+    [
+      'a countries entry sent alone',
+      'countries',
+      'Japan,Germany',
+      { countries: ['Japan,Germany'] },
+    ],
+    [
+      'a countries entry among several',
+      'countries',
+      'Korea,South',
+      { mode: 'series', countries: ['Japan', 'Korea,South'] },
+    ],
+    [
+      'start_date',
+      'start_date',
+      '2025-01-01,x:eq:1',
+      { mode: 'series', start_date: '2025-01-01,x:eq:1' },
+    ],
+    [
+      'end_date',
+      'end_date',
+      '2025-12-31,1',
+      { mode: 'series', start_date: '2025-01-01', end_date: '2025-12-31,1' },
+    ],
+  ])('refuses a comma in %s before any request, naming it', async (_label, param, value, input) => {
+    const result = await runToolContract(getExchangeRatesTool, input);
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(result.isError).toBe(true);
+    const { error } = result.structuredContent as {
+      error: { code: number; message: string; data: Record<string, unknown> };
+    };
+    expect(error).toMatchObject({
+      code: JsonRpcErrorCode.ValidationError,
+      message: `${param} value "${value}" contains a comma, so the call was refused before any request: the API reads a comma inside a filter value as the start of another condition.`,
+      data: {
+        reason: 'invalid_filter',
+        endpoint: RATES_ENDPOINT,
+        input: param,
+        value,
+        recovery: { hint: HINT },
+      },
+    });
+    expect(error.data).not.toHaveProperty('field');
+    const paragraphs = readParagraphs(contentText(result.content));
+    expect(paragraphs).toContain(`Error: ${error.message}`);
+    expect(paragraphs).toContain(`Recovery: ${HINT}`);
+  });
+
+  it("carries the service's refusal as the cause", async () => {
+    const ctx = createMockContext({ errors: getExchangeRatesTool.errors });
+    const input = getExchangeRatesTool.input.parse({
+      mode: 'series',
+      countries: ['Japan', 'Korea,South'],
+    });
+
+    const error = await Promise.resolve(getExchangeRatesTool.handler(input, ctx)).catch(
+      (e: unknown) => e,
+    );
+
+    expect(error).toMatchObject({
+      data: { reason: 'invalid_filter', input: 'countries' },
+      cause: { data: { reason: 'invalid_filter', field: 'country', value: 'Korea,South' } },
+    });
+  });
+});
+
+/**
+ * A 200 is checked too: this tool selects no fields, so `meta.labels` lists
+ * every field the endpoint has, and each one the tool reads from a row has to
+ * be there. A missing one would otherwise read as an empty rate.
+ */
+describe('a 200 that no longer lists a field this tool reads, through the real service', () => {
+  const HINT = `Query ${RATES_ENDPOINT} with treasury_query_dataset; omit fields to see the fields it has now.`;
+
+  beforeEach(async () => {
+    const { FiscalDataService } = await vi.importActual<
+      typeof import('@/services/fiscal-data/fiscal-data-service.js')
+    >('@/services/fiscal-data/fiscal-data-service.js');
+    vi.mocked(getFiscalDataService).mockReturnValue(new FiscalDataService());
+    const { exchange_rate: _gone, ...remaining } = RATES_LABELS;
+    const body = JSON.parse(envelopeBody(SAMPLE_ROWS)) as FiscalDataEnvelope;
+    const answer = JSON.stringify({ ...body, meta: { ...body.meta, labels: remaining } });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => Promise.resolve(jsonOk(answer))),
+    );
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it.each<[string, z.input<typeof getExchangeRatesTool.input>]>([
+    ['the newest-quarter probe', { mode: 'latest' }],
+    ['a country fetch', { mode: 'latest', countries: ['Japan'] }],
+    ['a series page', { mode: 'series' }],
+  ])(
+    'reports upstream_schema_changed from %s when exchange_rate is gone',
+    async (_label, input) => {
+      const result = await runToolContract(getExchangeRatesTool, input);
+
+      expect(result.isError).toBe(true);
+      const { error } = result.structuredContent as {
+        error: { code: number; message: string; data: Record<string, unknown> };
+      };
+      expect(error).toMatchObject({
+        code: JsonRpcErrorCode.InternalError,
+        message: `Field "exchange_rate" this tool reads is gone from endpoint "${RATES_ENDPOINT}". The response lists 5 fields: record_date, country, currency, country_currency_desc, effective_date.`,
+        data: {
+          reason: 'upstream_schema_changed',
+          endpoint: RATES_ENDPOINT,
+          recovery: { hint: HINT },
+        },
+      });
+      const paragraphs = readParagraphs(contentText(result.content));
+      expect(paragraphs).toContain(`Error: ${error.message}`);
+      expect(paragraphs).toContain(`Recovery: ${HINT}`);
+    },
+  );
 });

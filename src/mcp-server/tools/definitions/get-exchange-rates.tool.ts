@@ -7,8 +7,9 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { createEndpointFetcher } from '@/mcp-server/tools/endpoint-fetcher.js';
+import { markdownValue, quotedNotice } from '@/mcp-server/tools/markdown-encoding.js';
 import { getCanvasBridge, maybeRegisterDataframe } from '@/services/canvas-bridge/canvas-bridge.js';
-import { getFiscalDataService } from '@/services/fiscal-data/fiscal-data-service.js';
 import type { FilterCondition } from '@/services/fiscal-data/types.js';
 
 const RATES_ENDPOINT = '/v1/accounting/od/rates_of_exchange';
@@ -18,8 +19,8 @@ const RATE_NOTE =
 
 /**
  * Rows per request. This is the API's ceiling, not a preference — `page[size]`
- * above 10,000 is rejected outright ("Expected an integer between 1 and 10000"),
- * not clamped, so a larger matched set has to be walked with `page[number]`.
+ * above 10,000 is rejected outright (the 404 every rejected query gets), not
+ * clamped, so a larger matched set has to be walked with `page[number]`.
  */
 const MAX_PAGE_SIZE = 10_000;
 
@@ -96,6 +97,7 @@ export const getExchangeRatesTool = tool('treasury_get_exchange_rates', {
         'Guidance when a requested country matched no records, when the inline series is a preview, when the series was staged as a DataCanvas table, or when the returned rows were published in more than one quarter.',
       ),
   },
+  enrichmentTrailer: { notice: { render: quotedNotice } },
 
   errors: [
     {
@@ -104,6 +106,21 @@ export const getExchangeRatesTool = tool('treasury_get_exchange_rates', {
       when: 'One or more requested countries have no records — API returns HTTP 200 with empty data[]; total-count is 0 or fewer countries were returned than requested',
       recovery:
         'Use mode=latest without countries filter to list all available country names. Country names must match exactly (e.g., "Korea" not "South Korea"). Check spelling and case.',
+    },
+    {
+      reason: 'invalid_filter',
+      code: JsonRpcErrorCode.ValidationError,
+      when: 'A countries entry, start_date, or end_date contains a comma, which the API would read as the start of another filter condition — the call is refused before any request',
+      recovery:
+        'Send each countries entry as one exact country name, listing several countries as separate entries, and start_date/end_date as plain YYYY-MM-DD dates; no filter value can carry a comma.',
+      thrownBy: 'service',
+    },
+    {
+      reason: 'upstream_schema_changed',
+      code: JsonRpcErrorCode.InternalError,
+      when: 'The exchange-rate endpoint no longer has a field this tool requests, or its response no longer lists a field this tool reads — the API renamed or dropped it',
+      recovery: `Query ${RATES_ENDPOINT} with treasury_query_dataset; omit fields to see the fields it has now.`,
+      thrownBy: 'service',
     },
   ],
 
@@ -207,7 +224,26 @@ export const getExchangeRatesTool = tool('treasury_get_exchange_rates', {
   }),
 
   async handler(input, ctx) {
-    const svc = getFiscalDataService();
+    /**
+     * country carries the countries entries; record_date carries start_date
+     * (gte) and end_date (lte). The newest-quarter date is the API's own
+     * record_date, which holds no comma.
+     */
+    const fetchRates = createEndpointFetcher({
+      ctx,
+      endpoint: RATES_ENDPOINT,
+      budgetStart: Date.now(),
+      reads: [
+        'record_date',
+        'country',
+        'currency',
+        'country_currency_desc',
+        'exchange_rate',
+        'effective_date',
+      ],
+      inputFor: (field, value) =>
+        field === 'country' ? 'countries' : value === input.start_date ? 'start_date' : 'end_date',
+    });
 
     const filters: FilterCondition[] = [];
 
@@ -237,10 +273,7 @@ export const getExchangeRatesTool = tool('treasury_get_exchange_rates', {
        * the response can tell: total_records counts what survived the
        * per-currency collapse, not the upstream match.
        */
-      const probe = await svc.fetchPage(ctx, RATES_ENDPOINT, {
-        sort: '-record_date',
-        pageSize: 1,
-      });
+      const probe = await fetchRates({ sort: '-record_date', pageSize: 1 });
       const newestDate = probe.data[0]?.record_date;
       if (newestDate) {
         filters.push({ field: 'record_date', operator: 'eq', value: newestDate });
@@ -258,7 +291,7 @@ export const getExchangeRatesTool = tool('treasury_get_exchange_rates', {
     let totalCount = 0;
     if (input.mode === 'series') {
       for (let pageNumber = 1; fetched.length < SERIES_MAX_ROWS; pageNumber++) {
-        const page = await svc.fetchPage(ctx, RATES_ENDPOINT, {
+        const page = await fetchRates({
           filters: filters.length ? filters : undefined,
           sort: '-record_date',
           pageSize: MAX_PAGE_SIZE,
@@ -269,7 +302,7 @@ export const getExchangeRatesTool = tool('treasury_get_exchange_rates', {
         if (page.data.length < MAX_PAGE_SIZE || fetched.length >= totalCount) break;
       }
     } else {
-      const page = await svc.fetchPage(ctx, RATES_ENDPOINT, {
+      const page = await fetchRates({
         filters: filters.length ? filters : undefined,
         sort: '-record_date',
         pageSize: MAX_PAGE_SIZE,
@@ -478,15 +511,14 @@ export const getExchangeRatesTool = tool('treasury_get_exchange_rates', {
      * "As of" reads as a stamp over every row below it — the one claim a
      * mixed-date set cannot make.
      */
+    const dates = `${markdownValue(result.as_of_date)} (effective ${markdownValue(result.effective_date)})`;
     if (result.mixed_record_dates) {
-      lines.push(
-        `**Newest record date:** ${result.as_of_date} (effective ${result.effective_date})`,
-      );
+      lines.push(`**Newest record date:** ${dates}`);
       lines.push(
         '**Mixed record dates:** the retrieved rows were published in different quarters — read the Record Date on each.',
       );
     } else {
-      lines.push(`**As of:** ${result.as_of_date} (effective ${result.effective_date})`);
+      lines.push(`**As of:** ${dates}`);
     }
     /**
      * Keyed on the arithmetic, not on a canvas being present — a preview is
@@ -516,9 +548,15 @@ export const getExchangeRatesTool = tool('treasury_get_exchange_rates', {
     );
     lines.push('| --- | --- | --- | --- | --- | --- |');
     for (const r of result.rates) {
-      lines.push(
-        `| ${r.country} | ${r.currency} | ${r.country_currency_desc} | ${r.exchange_rate} | ${r.record_date} | ${r.effective_date} |`,
-      );
+      const cells = [
+        r.country,
+        r.currency,
+        r.country_currency_desc,
+        r.exchange_rate,
+        r.record_date,
+        r.effective_date,
+      ].map(markdownValue);
+      lines.push(`| ${cells.join(' | ')} |`);
     }
     return [{ type: 'text', text: lines.join('\n') }];
   },

@@ -8,8 +8,9 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { createEndpointFetcher, type PageOptions } from '@/mcp-server/tools/endpoint-fetcher.js';
+import { markdownValue } from '@/mcp-server/tools/markdown-encoding.js';
 import { getCanvasBridge, maybeRegisterDataframe } from '@/services/canvas-bridge/canvas-bridge.js';
-import { getFiscalDataService } from '@/services/fiscal-data/fiscal-data-service.js';
 
 const DEBT_ENDPOINT = '/v2/accounting/od/debt_to_penny';
 const DEBT_FIELDS = [
@@ -21,8 +22,8 @@ const DEBT_FIELDS = [
 
 /**
  * Rows per series request. This is the API's ceiling, not a preference —
- * `page[size]` above 10000 is rejected outright ("Expected an integer between 1
- * and 10000"), not clamped, so a larger matched set has to be walked with
+ * `page[size]` above 10000 is rejected outright (the 404 every rejected query
+ * gets), not clamped, so a larger matched set has to be walked with
  * `page[number]`.
  */
 const SERIES_PAGE_SIZE = 10_000;
@@ -43,6 +44,16 @@ const SERIES_MAX_ROWS = 50_000;
  * Everything above the cap is reachable through the canvas table instead.
  */
 const SERIES_PREVIEW_LIMIT = 20;
+
+/**
+ * An amount as content[] shows it. Upstream reports an amount it does not have
+ * as the string "null" (the 1993-04-01 record has no public/intragovernmental
+ * split), and structuredContent carries that string as is — so it renders as
+ * the bare word, since a dollar sign in front of it states an amount of "null".
+ */
+function usd(amount: string): string {
+  return amount === 'null' ? amount : `$${markdownValue(amount)}`;
+}
 
 export const getDebtTool = tool('treasury_get_debt', {
   title: 'Get National Debt',
@@ -72,6 +83,21 @@ export const getDebtTool = tool('treasury_get_debt', {
       when: 'No debt record exists for the requested date (API returns HTTP 200 with empty data[], not 404 — total-count is 0)',
       recovery:
         'Fiscal Data only records debt on business days from 1993-04-01 onward. Try the nearest business day, or use mode=series with a date range.',
+    },
+    {
+      reason: 'invalid_filter',
+      code: JsonRpcErrorCode.ValidationError,
+      when: 'A date value contains a comma, which the API would read as the start of another filter condition — the call is refused before any request',
+      recovery:
+        'Send date, start_date, and end_date as plain YYYY-MM-DD dates (e.g. 2026-05-28); no filter value can carry a comma.',
+      thrownBy: 'service',
+    },
+    {
+      reason: 'upstream_schema_changed',
+      code: JsonRpcErrorCode.InternalError,
+      when: 'The Debt to the Penny endpoint no longer has a field this tool requests, or its response no longer lists a field this tool reads — the API renamed or dropped it',
+      recovery: `Query ${DEBT_ENDPOINT} with treasury_query_dataset; omit fields to see the fields it has now.`,
+      thrownBy: 'service',
     },
   ],
 
@@ -160,10 +186,18 @@ export const getDebtTool = tool('treasury_get_debt', {
   }),
 
   async handler(input, ctx) {
-    const svc = getFiscalDataService();
+    // Every filter is on record_date; mode=date sends date, mode=series start_date (gte) and end_date (lte).
+    const fetchDebt = createEndpointFetcher({
+      ctx,
+      endpoint: DEBT_ENDPOINT,
+      budgetStart: Date.now(),
+      reads: DEBT_FIELDS,
+      inputFor: (_field, value) =>
+        input.mode === 'date' ? 'date' : value === input.start_date ? 'start_date' : 'end_date',
+    });
 
     if (input.mode === 'latest') {
-      const envelope = await svc.fetchPage(ctx, DEBT_ENDPOINT, {
+      const envelope = await fetchDebt({
         fields: DEBT_FIELDS,
         sort: '-record_date',
         pageSize: 1,
@@ -193,7 +227,7 @@ export const getDebtTool = tool('treasury_get_debt', {
           },
         });
       }
-      const envelope = await svc.fetchPage(ctx, DEBT_ENDPOINT, {
+      const envelope = await fetchDebt({
         fields: DEBT_FIELDS,
         filters: [{ field: 'record_date', operator: 'eq', value: input.date }],
       });
@@ -214,7 +248,7 @@ export const getDebtTool = tool('treasury_get_debt', {
     }
 
     // mode === 'series'
-    const seriesOpts: Parameters<typeof svc.fetchPage>[2] = {
+    const seriesOpts: PageOptions = {
       fields: DEBT_FIELDS,
       sort: '-record_date',
       pageSize: SERIES_PAGE_SIZE,
@@ -239,7 +273,7 @@ export const getDebtTool = tool('treasury_get_debt', {
     const rows: Record<string, string>[] = [];
     let totalRecords = 0;
     for (let pageNumber = 1; rows.length < SERIES_MAX_ROWS; pageNumber++) {
-      const envelope = await svc.fetchPage(ctx, DEBT_ENDPOINT, { ...seriesOpts, pageNumber });
+      const envelope = await fetchDebt({ ...seriesOpts, pageNumber });
       totalRecords = envelope.meta['total-count'];
       rows.push(...envelope.data);
       if (envelope.data.length < SERIES_PAGE_SIZE || rows.length >= totalRecords) break;
@@ -354,10 +388,10 @@ export const getDebtTool = tool('treasury_get_debt', {
      * as absence.
      */
     if (result.record_date) {
-      lines.push(`**Record Date:** ${result.record_date}`);
-      lines.push(`**Total Debt:** $${result.total_debt}`);
-      lines.push(`**Debt Held by Public:** $${result.debt_held_public}`);
-      lines.push(`**Intragovernmental Holdings:** $${result.intragovernmental_holdings}`);
+      lines.push(`**Record Date:** ${markdownValue(result.record_date)}`);
+      lines.push(`**Total Debt:** ${usd(result.total_debt)}`);
+      lines.push(`**Debt Held by Public:** ${usd(result.debt_held_public)}`);
+      lines.push(`**Intragovernmental Holdings:** ${usd(result.intragovernmental_holdings)}`);
     } else {
       lines.push('_No debt record matched._');
     }
@@ -382,7 +416,7 @@ export const getDebtTool = tool('treasury_get_debt', {
         lines.push('| --- | --- | --- | --- |');
         for (const r of result.series) {
           lines.push(
-            `| ${r.record_date} | $${r.total_debt} | $${r.debt_held_public} | $${r.intragovernmental_holdings} |`,
+            `| ${markdownValue(r.record_date)} | ${usd(r.total_debt)} | ${usd(r.debt_held_public)} | ${usd(r.intragovernmental_holdings)} |`,
           );
         }
       }

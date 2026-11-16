@@ -6,15 +6,22 @@
  */
 
 import { type Context, tool, z } from '@cyanheads/mcp-ts-core';
+import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
+import {
+  createEndpointFetcher,
+  type EndpointFetcher,
+  type PageOptions,
+} from '@/mcp-server/tools/endpoint-fetcher.js';
+import { markdownValue, quotedNotice } from '@/mcp-server/tools/markdown-encoding.js';
 import { getCanvasBridge, maybeRegisterDataframe } from '@/services/canvas-bridge/canvas-bridge.js';
-import { getFiscalDataService } from '@/services/fiscal-data/fiscal-data-service.js';
 
 const RATES_ENDPOINT = '/v2/accounting/od/avg_interest_rates';
 
 /**
  * Rows per request. The API's ceiling is 10,000 — `page[size]` above it is
- * rejected outright rather than clamped — and the whole corpus is 4,993 records,
- * so one page reaches every matched set this endpoint can produce.
+ * rejected outright (the 404 every rejected query gets) rather than clamped —
+ * and the whole corpus is 4,993 records, so one page reaches every matched set
+ * this endpoint can produce.
  */
 const SERIES_PAGE_SIZE = 10_000;
 
@@ -33,27 +40,23 @@ const LATEST_PAGE_SIZE = 100;
  */
 const SERIES_PREVIEW_LIMIT = 20;
 
-/** The Fiscal Data client, as the accessor hands it back. */
-type FiscalData = ReturnType<typeof getFiscalDataService>;
-
 /**
  * Record count and date span for one security type across the whole dataset, or
  * undefined when no record carries that name. Two one-row probes rather than a
  * full pull, so the cost stays flat as the corpus grows.
  */
 async function securityTypeSpan(
-  ctx: Context,
-  svc: FiscalData,
+  fetchRates: EndpointFetcher,
   securityType: string,
 ): Promise<{ records: number; oldest: string; newest: string } | undefined> {
-  const probe: Parameters<FiscalData['fetchPage']>[2] = {
+  const probe: PageOptions = {
     filters: [{ field: 'security_desc', operator: 'eq', value: securityType }],
     fields: ['record_date'],
     pageSize: 1,
   };
   const [newest, oldest] = await Promise.all([
-    svc.fetchPage(ctx, RATES_ENDPOINT, { ...probe, sort: '-record_date' }),
-    svc.fetchPage(ctx, RATES_ENDPOINT, { ...probe, sort: 'record_date' }),
+    fetchRates({ ...probe, sort: '-record_date' }),
+    fetchRates({ ...probe, sort: 'record_date' }),
   ]);
   const records = newest.meta['total-count'];
   if (records === 0) return;
@@ -66,10 +69,9 @@ async function securityTypeSpan(
 
 /** The security types the most recently published month carries. */
 async function currentSecurityTypes(
-  ctx: Context,
-  svc: FiscalData,
+  fetchRates: EndpointFetcher,
 ): Promise<{ asOf: string; types: string[] }> {
-  const page = await svc.fetchPage(ctx, RATES_ENDPOINT, {
+  const page = await fetchRates({
     fields: ['record_date', 'security_desc'],
     sort: '-record_date',
     pageSize: LATEST_PAGE_SIZE,
@@ -82,6 +84,22 @@ async function currentSecurityTypes(
 }
 
 /**
+ * Why a request could not be answered, when the failure is the upstream's
+ * availability — its budget ran out, or the API was down — rather than
+ * anything about the request. Undefined for every other failure.
+ */
+function unavailableBecause(error: unknown): string | undefined {
+  if (!(error instanceof McpError)) return;
+  if (error.code === JsonRpcErrorCode.Timeout) {
+    return "the Fiscal Data API did not answer within this call's time budget";
+  }
+  if (error.code === JsonRpcErrorCode.ServiceUnavailable) {
+    return 'the Fiscal Data API was unavailable';
+  }
+  return;
+}
+
+/**
  * Guidance for a query that matched nothing, read off the data rather than a
  * vocabulary written down here. Which security types Treasury publishes is not
  * fixed — Foreign Series was published through March 2026, Special Purpose
@@ -91,7 +109,7 @@ async function currentSecurityTypes(
  */
 async function emptyResultGuidance(
   ctx: Context,
-  svc: FiscalData,
+  fetchRates: EndpointFetcher,
   query: { mode: 'latest' | 'series'; securityType: string; hasDateRange: boolean },
 ): Promise<string> {
   const { mode, securityType, hasDateRange } = query;
@@ -115,16 +133,37 @@ async function emptyResultGuidance(
    * dates to report back.
    */
   if (hasDateRange) {
-    const span = await securityTypeSpan(ctx, svc, securityType);
+    const span = await securityTypeSpan(fetchRates, securityType);
     if (span) {
       return `No records for security_type="${securityType}" in that date range. That type has ${span.records} records, running ${span.oldest} to ${span.newest} (end-of-month) — widen start_date/end_date to cover it.`;
     }
   }
 
-  const { asOf, types } = await currentSecurityTypes(ctx, svc);
   const segments = [
     `No records for security_type="${securityType}" — no record in this dataset carries that name.`,
   ];
+
+  /**
+   * The listing is the one request here that settles nothing: the answer — an
+   * empty match — and the verdict on the name are already in hand, and it only
+   * adds the names on offer. An upstream that is down or out of budget costs
+   * that list, not the answer. Any other failure, and the caller's own
+   * cancellation, still end the call.
+   */
+  let listing: { asOf: string; types: string[] };
+  try {
+    listing = await currentSecurityTypes(fetchRates);
+  } catch (error) {
+    const because = ctx.signal.aborted ? undefined : unavailableBecause(error);
+    if (!because) throw error;
+    ctx.log.warning('Security-type listing failed; answering without it', { because });
+    segments.push(
+      `The security types the most recent month carries could not be fetched — ${because}. Call treasury_get_interest_rates with mode=latest and no security_type to list them.`,
+    );
+    return segments.join(' ');
+  }
+
+  const { asOf, types } = listing;
   if (types.length > 0) {
     segments.push(`Security types in the most recent month (${asOf}): ${types.join(', ')}.`);
     segments.push(
@@ -151,9 +190,28 @@ export const getInterestRatesTool = tool('treasury_get_interest_rates', {
       .string()
       .optional()
       .describe(
-        'Guidance when no records match (where the requested security type does have records, or the types the most recent month carries, or the empty date range), when the inline series is a preview, or when the series was staged as a DataCanvas table.',
+        'Guidance when no records match (where the requested security type does have records, or the types the most recent month carries — or why that list could not be fetched — or the empty date range), when the inline series is a preview, or when the series was staged as a DataCanvas table.',
       ),
   },
+  enrichmentTrailer: { notice: { render: quotedNotice } },
+
+  errors: [
+    {
+      reason: 'invalid_filter',
+      code: JsonRpcErrorCode.ValidationError,
+      when: 'security_type, start_date, or end_date contains a comma, which the API would read as the start of another filter condition — the call is refused before any request',
+      recovery:
+        'Send security_type as one exact security_desc name and start_date/end_date as plain YYYY-MM-DD dates; no filter value can carry a comma. Omit security_type to see the names on offer.',
+      thrownBy: 'service',
+    },
+    {
+      reason: 'upstream_schema_changed',
+      code: JsonRpcErrorCode.InternalError,
+      when: 'The average-interest-rates endpoint no longer has a field this tool requests, or its response no longer lists a field this tool reads — the API renamed or dropped it',
+      recovery: `Query ${RATES_ENDPOINT} with treasury_query_dataset; omit fields to see the fields it has now.`,
+      thrownBy: 'service',
+    },
+  ],
 
   input: z.object({
     mode: z
@@ -221,10 +279,23 @@ export const getInterestRatesTool = tool('treasury_get_interest_rates', {
   }),
 
   async handler(input, ctx) {
-    const svc = getFiscalDataService();
     const securityType = input.security_type?.trim() ?? '';
 
-    const ratesOpts: Parameters<typeof svc.fetchPage>[2] = {
+    // security_desc carries security_type; record_date carries start_date (gte) and end_date (lte).
+    const fetchRates = createEndpointFetcher({
+      ctx,
+      endpoint: RATES_ENDPOINT,
+      budgetStart: Date.now(),
+      reads: ['record_date', 'security_type_desc', 'security_desc', 'avg_interest_rate_amt'],
+      inputFor: (field, value) =>
+        field === 'security_desc'
+          ? 'security_type'
+          : value === input.start_date
+            ? 'start_date'
+            : 'end_date',
+    });
+
+    const ratesOpts: PageOptions = {
       sort: '-record_date',
       pageSize: input.mode === 'latest' ? LATEST_PAGE_SIZE : SERIES_PAGE_SIZE,
     };
@@ -247,7 +318,7 @@ export const getInterestRatesTool = tool('treasury_get_interest_rates', {
       if (seriesFilters.length) ratesOpts.filters = seriesFilters;
     }
 
-    const envelope = await svc.fetchPage(ctx, RATES_ENDPOINT, ratesOpts);
+    const envelope = await fetchRates(ratesOpts);
 
     const totalRecords = envelope.meta['total-count'];
 
@@ -260,7 +331,11 @@ export const getInterestRatesTool = tool('treasury_get_interest_rates', {
        * that was never wrong.
        */
       ctx.enrich.notice(
-        await emptyResultGuidance(ctx, svc, { mode: input.mode, securityType, hasDateRange }),
+        await emptyResultGuidance(ctx, fetchRates, {
+          mode: input.mode,
+          securityType,
+          hasDateRange,
+        }),
       );
       return {
         as_of_date: '',
@@ -373,7 +448,7 @@ export const getInterestRatesTool = tool('treasury_get_interest_rates', {
 
   format: (result) => {
     const lines: string[] = [];
-    lines.push(`**As of:** ${result.as_of_date}`);
+    lines.push(`**As of:** ${markdownValue(result.as_of_date)}`);
     /**
      * Keyed on the arithmetic, not on a canvas being present — a preview is
      * short whether or not anything absorbed the rows it left out.
@@ -396,8 +471,17 @@ export const getInterestRatesTool = tool('treasury_get_interest_rates', {
     lines.push('| Date | Type | Security | Rate (%) |');
     lines.push('| --- | --- | --- | --- |');
     for (const r of result.rates) {
+      /**
+       * Upstream reports a rate it does not have as the string "null", which
+       * structuredContent carries as is; a percent sign after it would state a
+       * rate of "null", so it renders as the bare word.
+       */
+      const rate =
+        r.avg_interest_rate_pct === 'null'
+          ? r.avg_interest_rate_pct
+          : `${markdownValue(r.avg_interest_rate_pct)}%`;
       lines.push(
-        `| ${r.record_date} | ${r.security_type} | ${r.security_desc} | ${r.avg_interest_rate_pct}% |`,
+        `| ${markdownValue(r.record_date)} | ${markdownValue(r.security_type)} | ${markdownValue(r.security_desc)} | ${rate} |`,
       );
     }
     return [{ type: 'text', text: lines.join('\n') }];
