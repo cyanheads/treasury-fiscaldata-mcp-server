@@ -19,7 +19,9 @@ export function markdownValue(value: string): string {
   return value
     .split(/(\r\n|\r|\n)/)
     .map((part, i) =>
-      i % 2 === 0 ? escapeMarkdownInline(part) : part.replace('\r', '&#13;').replace('\n', '&#10;'),
+      i % 2 === 0
+        ? escapeMarkdownInline(part)
+        : part.replaceAll('\r', '&#13;').replaceAll('\n', '&#10;'),
     )
     .join('');
 }
